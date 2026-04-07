@@ -1,0 +1,30 @@
+{
+  "appId": "com.remote-desktop.host",
+  "productName": "Remote Desktop Host",
+  "directories": {
+    "buildResources": "build",
+    "output": "release"
+  },
+  "files": [
+    "dist/**"
+  ],
+  "extraResources": [],
+  "win": {
+    "target": [
+      {
+        "target": "dir",
+        "arch": ["x64"]
+      }
+    ],
+    "signAndEditExecutable": false
+  },
+  "forceCodeSigning": false,
+  "portable": {
+    "artifactName": "RemoteDesktopHost.exe"
+  },
+  "npmRebuild": true,
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/@jitsi/robotjs/**"
+  ]
+}

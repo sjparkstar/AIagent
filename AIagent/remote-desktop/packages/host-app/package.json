@@ -1,0 +1,29 @@
+{
+  "name": "@remote-desktop/host-app",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm run build:main -- --watch\" \"npm run build:preload -- --watch\" \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "vite src/renderer --config vite.renderer.config.ts",
+    "dev:electron": "node scripts/wait-and-start.js",
+    "build:main": "esbuild src/main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --external:@jitsi/robotjs --format=cjs",
+    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --outfile=dist/preload/index.js --external:electron --format=cjs",
+    "build:renderer": "vite build src/renderer --config vite.renderer.config.ts --outDir ../../dist/renderer",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remote-desktop/shared": "workspace:*",
+    "@jitsi/robotjs": "^0.6.13"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.21.5",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.1"
+  }
+}

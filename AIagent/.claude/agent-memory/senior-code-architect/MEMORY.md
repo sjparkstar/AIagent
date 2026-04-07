@@ -1,0 +1,1 @@
+- [remote-desktop Phase 1~5](project_remote_desktop.md) — pnpm 모노레포, 시그널링 서버(PORT 8080), 뷰어 웹 앱(Vite), 호스트 Electron 앱(electron-vite), 뷰어 주도 화면 소스 선택

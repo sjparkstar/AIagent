@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' http://localhost:*; script-src 'self' 'unsafe-inline' http://localhost:*; style-src 'self' 'unsafe-inline' http://localhost:*; connect-src ws: wss: http://localhost:*; media-src 'self' blob: mediastream:"
+    />
+    <title>Remote Desktop Host</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Remote Desktop Host</h1>
+        <span class="status-badge">
+          상태: <span id="status-text">대기 중</span>
+        </span>
+      </header>
+
+      <section class="connect-section">
+        <h2>뷰어 접속</h2>
+        <div class="form-row">
+          <label for="server-url">시그널링 서버</label>
+          <input
+            id="server-url"
+            type="text"
+            placeholder="ws://localhost:8080"
+          />
+        </div>
+        <div class="form-row">
+          <label for="room-id-input">접속번호</label>
+          <input
+            id="room-id-input"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            placeholder="뷰어 앱의 접속번호"
+            maxlength="6"
+            autocomplete="off"
+          />
+        </div>
+        <button id="connect-btn" class="btn-primary">연결</button>
+        <div id="connect-error" class="error-text"></div>
+      </section>
+
+      <section id="share-section" class="room-section" style="display: none">
+        <h2>화면 공유</h2>
+
+        <div class="sharing-info">
+          <span class="sharing-label">공유 중인 화면:</span>
+          <span id="sharing-source-name" class="sharing-source-name"></span>
+        </div>
+
+        <div class="share-controls">
+          <button id="disconnect-btn" class="btn-danger">연결 종료</button>
+        </div>
+
+        <div class="preview-section">
+          <h3>미리보기</h3>
+          <video id="preview-video" muted autoplay playsinline></video>
+        </div>
+      </section>
+    </div>
+    <!-- 연결 종료 확인 팝업 -->
+    <div id="confirm-overlay" class="confirm-overlay" style="display:none">
+      <div class="confirm-dialog">
+        <p class="confirm-message">연결을 종료하시겠습니까?</p>
+        <div class="confirm-buttons">
+          <button id="confirm-cancel" class="btn-secondary">취소</button>
+          <button id="confirm-ok" class="btn-danger">종료</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Remote Desktop Viewer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- 대기실 생성 화면 -->
+    <div id="create-screen" class="screen">
+      <div class="connect-card">
+        <h1 class="app-title">Remote Desktop</h1>
+        <p class="app-subtitle">원격 데스크톱 뷰어</p>
+        <button id="create-btn" class="btn btn-primary">대기실 생성</button>
+        <div id="create-error" class="error-message" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <!-- 대기 중 화면 -->
+    <div id="waiting-screen" class="screen hidden">
+      <div class="connect-card">
+        <h1 class="app-title">Remote Desktop</h1>
+        <p class="app-subtitle">호스트 연결 대기 중</p>
+        <div class="room-info-box">
+          <span class="room-info-label">접속번호</span>
+          <span id="room-id-display" class="room-id-value">------</span>
+          <p class="room-info-hint">호스트에게 위 접속번호를 알려주세요.</p>
+        </div>
+        <div class="waiting-indicator">
+          <span class="spinner"></span>
+          <span id="waiting-status">호스트 대기 중...</span>
+        </div>
+        <button id="cancel-btn" class="btn btn-outline">대기 취소</button>
+      </div>
+    </div>
+
+    <!-- 스트리밍 화면 -->
+    <div id="stream-screen" class="screen hidden">
+      <div class="video-container">
+        <video
+          id="remote-video"
+          autoplay
+          playsinline
+          tabindex="0"
+        ></video>
+        <div id="reconnect-overlay" class="reconnect-overlay hidden">
+          <div class="reconnect-content">
+            <div class="skeleton-screen">
+              <div class="skeleton-bar"></div>
+              <div class="skeleton-bar short"></div>
+              <div class="skeleton-bar"></div>
+            </div>
+            <div class="reconnect-info">
+              <span class="spinner"></span>
+              <span id="reconnect-text">재연결 대기 중...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="status-bar">
+        <div class="status-left">
+          <span id="connection-badge" class="badge badge-connecting">연결 중</span>
+          <span id="room-id-label" class="room-label"></span>
+        </div>
+        <div class="status-right">
+          <div id="monitor-buttons" class="monitor-buttons"></div>
+          <span id="stats-display" class="stats-text"></span>
+          <button id="fullscreen-btn" class="btn btn-icon" title="전체화면">⛶</button>
+          <button id="disconnect-btn" class="btn btn-danger-sm">연결 끊기</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/renderer/**/*", "src/shared-types.ts"],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "../../",
+    "outDir": "dist/renderer",
+    "paths": {
+      "@remote-desktop/shared": ["../shared/src/index.ts"]
+    }
+  }
+}

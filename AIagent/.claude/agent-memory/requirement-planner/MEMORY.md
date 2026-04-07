@@ -1,0 +1,2 @@
+- [사용자 프로필](user_profile.md) — 한국어 선호, 설계/계획 중심 작업 요청
+- [WebRTC 원격 데스크톱 프로젝트](project_webrtc_remote_desktop.md) — WebRTC 기반 원격 제어 시스템 설계 요청

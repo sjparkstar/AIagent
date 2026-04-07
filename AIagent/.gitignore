@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+release/
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+.playwright-mcp/

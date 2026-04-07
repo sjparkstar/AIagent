@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+allowBuilds:
+  bcrypt: true
+  esbuild: true
+  "@jitsi/robotjs": true
+  electron: true

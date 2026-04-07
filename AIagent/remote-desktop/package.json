@@ -1,0 +1,14 @@
+{
+  "name": "remote-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter signaling-server dev",
+    "dev:host": "pnpm --filter host-app dev",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
