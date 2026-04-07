@@ -7,7 +7,7 @@
     "dev": "concurrently -k \"npm run build:main -- --watch\" \"npm run build:preload -- --watch\" \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite src/renderer --config vite.renderer.config.ts",
     "dev:electron": "node scripts/wait-and-start.js",
-    "build:main": "esbuild src/main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --external:@jitsi/robotjs --format=cjs",
+    "build:main": "esbuild src/main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --external:@jitsi/robotjs --external:os --format=cjs",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --outfile=dist/preload/index.js --external:electron --format=cjs",
     "build:renderer": "vite build src/renderer --config vite.renderer.config.ts --outDir ../../dist/renderer",
     "build": "npm run build:main && npm run build:preload && npm run build:renderer",

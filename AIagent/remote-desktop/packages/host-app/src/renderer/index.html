@@ -7,13 +7,13 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self' http://localhost:*; script-src 'self' 'unsafe-inline' http://localhost:*; style-src 'self' 'unsafe-inline' http://localhost:*; connect-src ws: wss: http://localhost:*; media-src 'self' blob: mediastream:"
     />
-    <title>Remote Desktop Host</title>
+    <title>RemoteCall-mini Host</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="container">
       <header>
-        <h1>Remote Desktop Host</h1>
+        <h1>RemoteCall-mini Host</h1>
         <span class="status-badge">
           상태: <span id="status-text">대기 중</span>
         </span>
@@ -41,7 +41,7 @@
             autocomplete="off"
           />
         </div>
-        <button id="connect-btn" class="btn-primary">연결</button>
+        <button id="connect-btn" class="btn-primary" data-state="disconnected">연결</button>
         <div id="connect-error" class="error-text"></div>
       </section>
 
@@ -51,10 +51,6 @@
         <div class="sharing-info">
           <span class="sharing-label">공유 중인 화면:</span>
           <span id="sharing-source-name" class="sharing-source-name"></span>
-        </div>
-
-        <div class="share-controls">
-          <button id="disconnect-btn" class="btn-danger">연결 종료</button>
         </div>
 
         <div class="preview-section">

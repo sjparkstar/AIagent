@@ -1,9 +1,13 @@
 type ConnectionState = "connecting" | "connected" | "disconnected";
 
+// 메시지 타입: assistant(AI 봇), user(사용자), system(시스템 알림)
+export type MessageType = "assistant" | "user" | "system";
+
 export class UI {
   readonly createScreen = document.getElementById("create-screen") as HTMLDivElement;
   readonly waitingScreen = document.getElementById("waiting-screen") as HTMLDivElement;
   readonly streamScreen = document.getElementById("stream-screen") as HTMLDivElement;
+  readonly endScreen = document.getElementById("end-screen") as HTMLDivElement;
 
   readonly createBtn = document.getElementById("create-btn") as HTMLButtonElement;
   readonly createError = document.getElementById("create-error") as HTMLDivElement;
@@ -22,15 +26,33 @@ export class UI {
   readonly reconnectOverlay = document.getElementById("reconnect-overlay") as HTMLDivElement;
   readonly reconnectText = document.getElementById("reconnect-text") as HTMLSpanElement;
 
+  // AI 어시스턴트 패널 관련 DOM 참조
+  readonly assistantPanel = document.getElementById("assistant-panel") as HTMLDivElement;
+  readonly assistantMessages = document.getElementById("assistant-messages") as HTMLDivElement;
+  readonly assistantInput = document.getElementById("assistant-input") as HTMLInputElement;
+  readonly assistantSendBtn = document.getElementById("assistant-send-btn") as HTMLButtonElement;
+  readonly assistantCollapseBtn = document.getElementById("assistant-collapse-btn") as HTMLButtonElement;
+  readonly assistantWidgetBtn = document.getElementById("assistant-widget-btn") as HTMLButtonElement;
+  readonly assistantOpenBtn = document.getElementById("assistant-open-btn") as HTMLButtonElement;
   private onMonitorClick: ((sourceId: string) => void) | null = null;
+  // 패널 접힘 상태 추적
+  private _isPanelCollapsed = false;
 
   showCreateScreen(): void {
     this.waitingScreen.classList.add("hidden");
     this.streamScreen.classList.add("hidden");
+    this.endScreen.classList.add("hidden");
     this.createScreen.classList.remove("hidden");
     this.clearError();
     this.setCreateLoading(false);
     this.clearMonitorButtons();
+  }
+
+  showEndScreen(): void {
+    this.createScreen.classList.add("hidden");
+    this.waitingScreen.classList.add("hidden");
+    this.streamScreen.classList.add("hidden");
+    this.endScreen.classList.remove("hidden");
   }
 
   showWaitingScreen(roomId: string): void {
@@ -75,7 +97,7 @@ export class UI {
 
   setCreateLoading(loading: boolean): void {
     this.createBtn.disabled = loading;
-    this.createBtn.textContent = loading ? "생성 중..." : "대기실 생성";
+    this.createBtn.textContent = loading ? "연결 중..." : "상담 연결";
   }
 
   updateStats(text: string): void {
@@ -119,5 +141,92 @@ export class UI {
 
   private clearMonitorButtons(): void {
     this.monitorButtons.innerHTML = "";
+  }
+
+  // ── AI 어시스턴트 패널 메서드 ──────────────────────────
+
+  /**
+   * 메시지 영역에 새 메시지를 추가한다.
+   * @param type - "assistant" | "user" | "system"
+   * @param text - 표시할 텍스트
+   * @returns 생성된 메시지 행 요소 (로딩 제거 등에 활용)
+   */
+  addAssistantMessage(type: MessageType, text: string): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = `message-row ${type}`;
+
+    if (type === "assistant") {
+      // AI 봇 발신자 표시
+      const sender = document.createElement("div");
+      sender.className = "message-sender";
+      sender.innerHTML = `<span class="sender-icon">✦</span><span>AI Assistant</span>`;
+      row.appendChild(sender);
+    }
+
+    const bubble = document.createElement("div");
+    bubble.className = "message-bubble";
+    bubble.textContent = text;
+    row.appendChild(bubble);
+
+    this.assistantMessages.appendChild(row);
+    // 새 메시지가 추가될 때 자동 스크롤
+    this.assistantMessages.scrollTop = this.assistantMessages.scrollHeight;
+    return row;
+  }
+
+  /**
+   * 로딩 중 점(...)을 메시지 영역에 표시한다.
+   * @returns 생성된 로딩 행 요소 (검색 완료 후 제거할 때 사용)
+   */
+  addLoadingMessage(): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "message-row assistant";
+
+    const sender = document.createElement("div");
+    sender.className = "message-sender";
+    sender.innerHTML = `<span class="sender-icon">✦</span><span>AI Assistant</span>`;
+    row.appendChild(sender);
+
+    const loading = document.createElement("div");
+    loading.className = "message-loading";
+    loading.innerHTML = `
+      <span class="loading-dot"></span>
+      <span class="loading-dot"></span>
+      <span class="loading-dot"></span>
+    `;
+    row.appendChild(loading);
+
+    this.assistantMessages.appendChild(row);
+    this.assistantMessages.scrollTop = this.assistantMessages.scrollHeight;
+    return row;
+  }
+
+  /**
+   * 패널 접기/펼치기 토글.
+   * 접히면 비디오 영역이 전체 너비를 차지하고, status-bar에 열기 버튼이 나타난다.
+   */
+  toggleAssistantPanel(): void {
+    this._isPanelCollapsed = !this._isPanelCollapsed;
+    this.setAssistantPanelVisible(!this._isPanelCollapsed);
+  }
+
+  /**
+   * 패널 표시/숨김을 직접 설정한다.
+   * @param visible - true면 패널 표시, false면 패널 숨김
+   */
+  setAssistantPanelVisible(visible: boolean): void {
+    this._isPanelCollapsed = !visible;
+    if (visible) {
+      this.assistantPanel.classList.remove("collapsed");
+      // 패널 열기 버튼 숨김
+      this.assistantOpenBtn.classList.add("hidden");
+      // 접기 버튼 아이콘 방향 복원
+      this.assistantCollapseBtn.title = "패널 접기";
+      this.assistantCollapseBtn.textContent = "›";
+    } else {
+      this.assistantPanel.classList.add("collapsed");
+      // status-bar에 패널 열기 버튼 표시
+      this.assistantOpenBtn.classList.remove("hidden");
+    }
   }
 }

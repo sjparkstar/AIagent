@@ -1,6 +1,6 @@
 {
   "appId": "com.remote-desktop.host",
-  "productName": "Remote Desktop Host",
+  "productName": "RemoteCall-mini Host",
   "directories": {
     "buildResources": "build",
     "output": "release"

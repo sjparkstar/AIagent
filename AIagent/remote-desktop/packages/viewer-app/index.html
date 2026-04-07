@@ -3,24 +3,78 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Remote Desktop Viewer</title>
+    <title>RemoteCall-mini Viewer</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <!-- 대기실 생성 화면 -->
+    <!-- 메인 대시보드 화면 -->
     <div id="create-screen" class="screen">
+      <div class="dashboard">
+        <header class="dashboard-header">
+          <h1 class="app-title">RemoteCall-mini</h1>
+          <p class="app-subtitle">원격지원 대시보드</p>
+        </header>
+
+        <!-- 통계 카드 영역 -->
+        <div class="stats-cards">
+          <div class="stats-card">
+            <span class="stats-card-label">총 세션</span>
+            <span id="stat-total" class="stats-card-value">--</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-card-label">오늘 세션</span>
+            <span id="stat-today" class="stats-card-value">--</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-card-label">평균 시간</span>
+            <span id="stat-avg-duration" class="stats-card-value">--</span>
+          </div>
+          <div class="stats-card">
+            <span class="stats-card-label">평균 RTT</span>
+            <span id="stat-avg-rtt" class="stats-card-value">--</span>
+          </div>
+        </div>
+
+        <!-- 최근 세션 목록 -->
+        <div class="recent-sessions">
+          <h2 class="section-title">최근 상담 이력</h2>
+          <div id="session-list" class="session-list">
+            <p class="session-empty">로딩 중...</p>
+          </div>
+        </div>
+
+        <!-- 상담 연결 버튼 -->
+        <div class="connect-action">
+          <button id="create-btn" class="btn btn-primary btn-connect">상담 연결</button>
+          <div id="create-error" class="error-message" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 세션 상세 모달 -->
+    <div id="session-detail-modal" class="modal-overlay hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title" class="modal-title">세션 상세</h2>
+          <button id="modal-close-btn" class="btn btn-icon modal-close">✕</button>
+        </div>
+        <div id="modal-body" class="modal-body">로딩 중...</div>
+      </div>
+    </div>
+
+    <!-- 상담 종료 화면 -->
+    <div id="end-screen" class="screen hidden">
       <div class="connect-card">
-        <h1 class="app-title">Remote Desktop</h1>
-        <p class="app-subtitle">원격 데스크톱 뷰어</p>
-        <button id="create-btn" class="btn btn-primary">대기실 생성</button>
-        <div id="create-error" class="error-message" aria-live="polite"></div>
+        <h1 class="app-title">RemoteCall-mini</h1>
+        <p class="end-message">상담이 종료되었습니다.</p>
+        <button id="end-close-btn" class="btn btn-primary">확인</button>
       </div>
     </div>
 
     <!-- 대기 중 화면 -->
     <div id="waiting-screen" class="screen hidden">
       <div class="connect-card">
-        <h1 class="app-title">Remote Desktop</h1>
+        <h1 class="app-title">RemoteCall-mini</h1>
         <p class="app-subtitle">호스트 연결 대기 중</p>
         <div class="room-info-box">
           <span class="room-info-label">접속번호</span>
@@ -37,27 +91,109 @@
 
     <!-- 스트리밍 화면 -->
     <div id="stream-screen" class="screen hidden">
-      <div class="video-container">
-        <video
-          id="remote-video"
-          autoplay
-          playsinline
-          tabindex="0"
-        ></video>
-        <div id="reconnect-overlay" class="reconnect-overlay hidden">
-          <div class="reconnect-content">
-            <div class="skeleton-screen">
-              <div class="skeleton-bar"></div>
-              <div class="skeleton-bar short"></div>
-              <div class="skeleton-bar"></div>
-            </div>
-            <div class="reconnect-info">
-              <span class="spinner"></span>
-              <span id="reconnect-text">재연결 대기 중...</span>
+      <!-- 비디오 영역과 AI 패널을 가로로 나누는 컨테이너 -->
+      <div class="stream-main">
+        <!-- 기존 비디오 영역 (video-container를 video-area로 감쌈) -->
+        <div class="video-area">
+          <div class="video-container">
+            <video
+              id="remote-video"
+              autoplay
+              playsinline
+              tabindex="0"
+            ></video>
+            <div id="reconnect-overlay" class="reconnect-overlay hidden">
+              <div class="reconnect-content">
+                <div class="skeleton-screen">
+                  <div class="skeleton-bar"></div>
+                  <div class="skeleton-bar short"></div>
+                  <div class="skeleton-bar"></div>
+                </div>
+                <div class="reconnect-info">
+                  <span class="spinner"></span>
+                  <span id="reconnect-text">재연결 대기 중...</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+
+        <!-- AI 어시스턴트 사이드 패널 -->
+        <div id="assistant-panel" class="assistant-panel">
+          <!-- 패널 헤더: 타이틀 + 위젯 분리/접기 버튼 -->
+          <div class="assistant-header">
+            <div class="assistant-header-title">
+              <span class="assistant-icon">✦</span>
+              <span>AI Assistant</span>
+            </div>
+            <div class="assistant-header-actions">
+              <!-- 위젯 분리 버튼: 별도 팝업 창으로 분리 -->
+              <button id="assistant-widget-btn" class="btn btn-icon assistant-action-btn" title="별도 창으로 열기">⧉</button>
+              <!-- 패널 접기 버튼: 패널 숨기고 비디오 전체 너비 -->
+              <button id="assistant-collapse-btn" class="btn btn-icon assistant-action-btn" title="패널 접기">›</button>
+            </div>
+          </div>
+
+          <!-- 호스트 시스템 정보 바 -->
+          <div class="host-info-bar" id="host-info-bar">
+            <div class="host-info-row">
+              <span class="host-info-label">OS</span>
+              <span id="host-os" class="host-info-value">--</span>
+            </div>
+            <div class="host-info-row">
+              <span class="host-info-label">CPU</span>
+              <span id="host-cpu" class="host-info-value">--</span>
+            </div>
+            <div class="host-info-row">
+              <span class="host-info-label">MEM</span>
+              <span id="host-mem" class="host-info-value">--</span>
+            </div>
+            <div class="host-info-row">
+              <span class="host-info-label">Uptime</span>
+              <span id="host-uptime" class="host-info-value">--</span>
+            </div>
+          </div>
+
+          <!-- 메시지 영역: 채팅 형식으로 AI 응답 표시 -->
+          <div id="assistant-messages" class="assistant-messages"></div>
+
+          <!-- 하단 검색 입력 바 -->
+          <div class="assistant-input-bar">
+            <!-- 왼쪽 아이콘 버튼들 (UI만, 기능 미구현) -->
+            <div class="assistant-input-icons">
+              <button class="btn btn-icon assistant-icon-btn" data-action="file" title="파일 첨부">📎</button>
+              <button class="btn btn-icon assistant-icon-btn" data-action="image" title="이미지">🖼</button>
+              <button class="btn btn-icon assistant-icon-btn" data-action="mic" title="마이크">🎤</button>
+            </div>
+            <input
+              type="text"
+              id="assistant-input"
+              class="assistant-text-input"
+              placeholder="검색어를 입력하세요..."
+            />
+            <!-- 전송 버튼 -->
+            <button id="assistant-send-btn" class="btn btn-icon assistant-send-btn" title="전송">→</button>
+          </div>
+
+          <!-- 하단 네비게이션 바 -->
+          <nav class="assistant-nav-bar">
+            <button class="assistant-nav-item active" data-tab="ai">
+              <span class="assistant-nav-icon">✦</span>
+              <span class="assistant-nav-label">AI</span>
+            </button>
+            <button class="assistant-nav-item" data-tab="macro">
+              <span class="assistant-nav-icon">⚡</span>
+              <span class="assistant-nav-label">매크로</span>
+            </button>
+            <button class="assistant-nav-item" data-tab="settings">
+              <span class="assistant-nav-icon">⚙</span>
+              <span class="assistant-nav-label">설정</span>
+            </button>
+          </nav>
+        </div>
       </div>
+
+      <!-- 기존 상태 바 (그대로 유지) -->
       <div class="status-bar">
         <div class="status-left">
           <span id="connection-badge" class="badge badge-connecting">연결 중</span>
@@ -66,6 +202,8 @@
         <div class="status-right">
           <div id="monitor-buttons" class="monitor-buttons"></div>
           <span id="stats-display" class="stats-text"></span>
+          <!-- 패널 접힌 상태에서 다시 열기 버튼 -->
+          <button id="assistant-open-btn" class="btn btn-icon hidden" title="AI 패널 열기" style="font-size:13px; color: var(--accent);">✦ AI</button>
           <button id="fullscreen-btn" class="btn btn-icon" title="전체화면">⛶</button>
           <button id="disconnect-btn" class="btn btn-danger-sm">연결 끊기</button>
         </div>

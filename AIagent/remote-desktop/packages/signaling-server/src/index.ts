@@ -1,8 +1,10 @@
+import "dotenv/config";
 import http from "http";
 import { WebSocketServer } from "ws";
 import { DEFAULT_PORT } from "@remote-desktop/shared";
 import { log } from "./logger.js";
 import { attachWebSocketHandlers } from "./server.js";
+import { handleAssistantChat } from "./assistant-api.js";
 
 const PORT = parseInt(process.env["PORT"] ?? String(DEFAULT_PORT), 10);
 
@@ -12,6 +14,13 @@ const httpServer = http.createServer((req, res) => {
     res.end(
       JSON.stringify({ status: "ok", timestamp: new Date().toISOString() })
     );
+    return;
+  }
+  if (req.url === "/api/assistant-chat") {
+    handleAssistantChat(req, res).catch(() => {
+      res.writeHead(500);
+      res.end();
+    });
     return;
   }
   res.writeHead(404);

@@ -21,10 +21,21 @@ export type InputMessage =
   | { type: "text-input"; text: string }
   | { type: "clipboard-sync"; text: string };
 
+export interface HostSystemInfo {
+  os: string;
+  version: string;
+  cpuModel: string;
+  cpuUsage: number;
+  memTotal: number;
+  memUsed: number;
+  uptime: number;
+}
+
 export type ControlMessage =
-  | { type: "screen-sources"; sources: { id: string; name: string }[] }
+  | { type: "screen-sources"; sources: { id: string; name: string }[]; activeSourceId?: string }
   | { type: "switch-source"; sourceId: string }
-  | { type: "source-changed"; sourceId: string; name: string };
+  | { type: "source-changed"; sourceId: string; name: string }
+  | { type: "host-info"; info: HostSystemInfo };
 
 export type DataChannelMessage = InputMessage | ControlMessage;
 

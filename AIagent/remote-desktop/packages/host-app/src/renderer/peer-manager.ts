@@ -16,8 +16,13 @@ export class PeerManager {
   private onViewerConnected: ViewerEventHandler | null = null;
   private onViewerDisconnected: ViewerEventHandler | null = null;
   private onSwitchSource: SwitchSourceHandler | null = null;
+  private activeSourceId: string | null = null;
 
   constructor(private readonly signaling: SignalingClient) {}
+
+  setActiveSourceId(sourceId: string | null): void {
+    this.activeSourceId = sourceId;
+  }
 
   setStream(stream: MediaStream): void {
     this.stream = stream;
@@ -184,6 +189,7 @@ export class PeerManager {
       this.sendToViewer(viewerId, {
         type: "screen-sources",
         sources: sources.map((s) => ({ id: s.id, name: s.name })),
+        activeSourceId: this.activeSourceId ?? undefined,
       });
     }).catch((err) => {
       console.error("[peer-manager] getScreenSources error:", err);

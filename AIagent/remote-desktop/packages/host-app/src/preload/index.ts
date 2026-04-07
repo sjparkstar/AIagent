@@ -1,11 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { InputMessage } from "@remote-desktop/shared";
+import type { InputMessage, HostSystemInfo } from "@remote-desktop/shared";
 import type { ScreenSource } from "../main/capture";
 import type { HostAPI } from "../shared-types";
 
 contextBridge.exposeInMainWorld("hostAPI", {
   getScreenSources: (): Promise<ScreenSource[]> =>
     ipcRenderer.invoke("get-screen-sources"),
+
+  getSystemInfo: (): Promise<HostSystemInfo> =>
+    ipcRenderer.invoke("get-system-info"),
 
   injectInput: (msg: InputMessage): void =>
     ipcRenderer.send("inject-input", msg),

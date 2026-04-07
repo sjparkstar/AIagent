@@ -1,11 +1,48 @@
 import { ipcMain, BrowserWindow } from "electron";
-import type { InputMessage } from "@remote-desktop/shared";
+import type { InputMessage, HostSystemInfo } from "@remote-desktop/shared";
+
+// Node.js built-in — require를 사용해 esbuild 번들 충돌 방지
+const os = require("os") as typeof import("os");
 import { getScreenSources } from "./capture";
 import { injectInput, setActiveBounds } from "./input";
+
+let prevCpuTimes: { idle: number; total: number } | null = null;
+
+function getCpuUsage(): number {
+  const cpus = os.cpus();
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    idle += cpu.times.idle;
+    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.irq + cpu.times.idle;
+  }
+  if (!prevCpuTimes) {
+    prevCpuTimes = { idle, total };
+    return 0;
+  }
+  const idleDiff = idle - prevCpuTimes.idle;
+  const totalDiff = total - prevCpuTimes.total;
+  prevCpuTimes = { idle, total };
+  return totalDiff > 0 ? Math.round((1 - idleDiff / totalDiff) * 100) : 0;
+}
 
 export function registerIpcHandlers(): void {
   ipcMain.handle("get-screen-sources", async () => {
     return getScreenSources();
+  });
+
+  ipcMain.handle("get-system-info", (): HostSystemInfo => {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    return {
+      os: `${os.type()} ${os.arch()}`,
+      version: os.release(),
+      cpuModel: os.cpus()[0]?.model ?? "Unknown",
+      cpuUsage: getCpuUsage(),
+      memTotal: Math.round(totalMem / 1024 / 1024),
+      memUsed: Math.round((totalMem - freeMem) / 1024 / 1024),
+      uptime: Math.round(os.uptime()),
+    };
   });
 
   ipcMain.on("inject-input", (_event, msg: InputMessage) => {

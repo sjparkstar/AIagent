@@ -4,19 +4,30 @@ import type { ScreenSource } from "../main/capture";
 import { DEFAULT_PORT } from "@remote-desktop/shared";
 
 const DUMMY_PASS = "nopass";
+const RECONNECT_TIMEOUT_MS = 30_000;
 
 const signaling = new SignalingClient();
 const peerManager = new PeerManager(signaling);
 
 let currentStream: MediaStream | null = null;
 let currentSourceId: string | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let isConnected = false;
+let sysInfoTimer: ReturnType<typeof setInterval> | null = null;
+
+function setConnectBtnState(connected: boolean): void {
+  isConnected = connected;
+  connectBtn.dataset["state"] = connected ? "connected" : "disconnected";
+  connectBtn.textContent = connected ? "연결 종료" : "연결";
+  connectBtn.className = connected ? "btn-danger" : "btn-primary";
+  connectBtn.disabled = false;
+}
 
 const serverUrlInput = document.getElementById("server-url") as HTMLInputElement;
 const roomIdInput = document.getElementById("room-id-input") as HTMLInputElement;
 const connectBtn = document.getElementById("connect-btn") as HTMLButtonElement;
 const connectError = document.getElementById("connect-error") as HTMLDivElement;
 const shareSection = document.getElementById("share-section") as HTMLDivElement;
-const disconnectBtn = document.getElementById("disconnect-btn") as HTMLButtonElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const previewVideo = document.getElementById("preview-video") as HTMLVideoElement;
 const sharingSourceName = document.getElementById("sharing-source-name") as HTMLSpanElement;
@@ -72,6 +83,7 @@ async function startSharingFirstSource(): Promise<void> {
     }
     currentStream = await startScreenCapture(firstSource.id);
     currentSourceId = firstSource.id;
+    peerManager.setActiveSourceId(currentSourceId);
     peerManager.setStream(currentStream);
     previewVideo.srcObject = currentStream;
     previewVideo.play();
@@ -118,6 +130,7 @@ async function switchSource(sourceId: string): Promise<void> {
   }
   currentStream = newStream;
   currentSourceId = sourceId;
+  peerManager.setActiveSourceId(currentSourceId);
 
   await peerManager.replaceVideoTrack(newTrack);
 
@@ -144,6 +157,12 @@ peerManager.setOnSwitchSource((sourceId) => {
 });
 
 connectBtn.addEventListener("click", async () => {
+  if (isConnected) {
+    // 연결 종료: 확인 팝업 표시
+    confirmOverlay.style.display = "flex";
+    return;
+  }
+
   const serverUrl = serverUrlInput.value.trim() || `ws://localhost:${DEFAULT_PORT}`;
   const roomId = roomIdInput.value.trim();
 
@@ -174,28 +193,72 @@ signaling.onMessage((msg) => {
   switch (msg.type) {
     case "room-info":
       shareSection.style.display = "block";
-      connectBtn.disabled = false;
+      setConnectBtnState(true);
       setStatus("연결됨 - 화면 공유 시작 중...");
       startSharingFirstSource();
       break;
 
     case "error":
       showError(`오류: ${msg.message}`);
-      connectBtn.disabled = false;
+      setConnectBtnState(false);
       setStatus("대기 중");
       break;
   }
 });
 
+function startSysInfoBroadcast(): void {
+  stopSysInfoBroadcast();
+  const send = async (): Promise<void> => {
+    if (!window.hostAPI || peerManager.viewerCount === 0) return;
+    try {
+      const info = await window.hostAPI.getSystemInfo();
+      peerManager.broadcastToViewers({ type: "host-info", info });
+    } catch {}
+  };
+  send();
+  sysInfoTimer = setInterval(send, 5000);
+}
+
+function stopSysInfoBroadcast(): void {
+  if (sysInfoTimer) {
+    clearInterval(sysInfoTimer);
+    sysInfoTimer = null;
+  }
+}
+
 peerManager.setOnViewerConnected((_viewerId) => {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   setStatus("뷰어 연결됨 - 화면 공유 중");
+  startSysInfoBroadcast();
 });
 
 peerManager.setOnViewerDisconnected((_viewerId) => {
-  setStatus("뷰어 연결 끊김");
+  // 아직 다른 뷰어가 연결되어 있으면 무시
+  if (peerManager.viewerCount > 0) return;
+
+  setStatus("뷰어 연결 끊김 - 재연결 대기 중...");
+
+  // 이미 타이머가 돌고 있으면 중복 방지
+  if (reconnectTimer) return;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    // 대기 시간 내에 재연결이 없으면 초기 화면으로 복귀
+    if (peerManager.viewerCount === 0) {
+      disconnectAll();
+    }
+  }, RECONNECT_TIMEOUT_MS);
 });
 
 function disconnectAll(): void {
+  stopSysInfoBroadcast();
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (currentStream) {
     currentStream.getTracks().forEach((t) => t.stop());
     currentStream = null;
@@ -205,16 +268,12 @@ function disconnectAll(): void {
   peerManager.closeAll();
   signaling.disconnect();
   shareSection.style.display = "none";
-  connectBtn.disabled = false;
+  setConnectBtnState(false);
   if (sharingSourceName) {
     sharingSourceName.textContent = "";
   }
   setStatus("대기 중");
 }
-
-disconnectBtn.addEventListener("click", () => {
-  confirmOverlay.style.display = "flex";
-});
 
 confirmCancel.addEventListener("click", () => {
   confirmOverlay.style.display = "none";

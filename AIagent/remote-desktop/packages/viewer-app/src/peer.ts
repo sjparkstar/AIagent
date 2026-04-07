@@ -72,7 +72,7 @@ export class PeerConnection {
     this.inputChannel.onmessage = (event: MessageEvent) => {
       try {
         const msg = JSON.parse(event.data as string) as DataChannelMessage;
-        const controlTypes = new Set(["screen-sources", "switch-source", "source-changed"]);
+        const controlTypes = new Set(["screen-sources", "switch-source", "source-changed", "host-info"]);
         if (controlTypes.has(msg.type)) {
           this.handlers["control-message"]?.(msg as ControlMessage);
         }
