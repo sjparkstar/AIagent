@@ -10,6 +10,7 @@ export class StreamDisplay {
 
   attachStream(stream: MediaStream): void {
     this.videoEl.srcObject = stream;
+    this.videoEl.play().catch(() => {});
   }
 
   startStats(peer: PeerConnection, onUpdate: (text: string) => void): void {

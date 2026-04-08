@@ -18,8 +18,9 @@ let sysInfoTimer: ReturnType<typeof setInterval> | null = null;
 function setConnectBtnState(connected: boolean): void {
   isConnected = connected;
   connectBtn.dataset["state"] = connected ? "connected" : "disconnected";
-  connectBtn.textContent = connected ? "연결 종료" : "연결";
-  connectBtn.className = connected ? "btn-danger" : "btn-primary";
+  connectBtn.style.display = connected ? "inline-block" : "none";
+  connectBtn.textContent = "연결 종료";
+  connectBtn.className = "btn-danger";
   connectBtn.disabled = false;
 }
 
@@ -34,6 +35,9 @@ const sharingSourceName = document.getElementById("sharing-source-name") as HTML
 const confirmOverlay = document.getElementById("confirm-overlay") as HTMLDivElement;
 const confirmCancel = document.getElementById("confirm-cancel") as HTMLButtonElement;
 const confirmOk = document.getElementById("confirm-ok") as HTMLButtonElement;
+const errorOverlay = document.getElementById("error-overlay") as HTMLDivElement;
+const errorPopupMsg = document.getElementById("error-popup-msg") as HTMLParagraphElement;
+const errorPopupOk = document.getElementById("error-popup-ok") as HTMLButtonElement;
 
 function setStatus(text: string): void {
   statusText.textContent = text;
@@ -41,6 +45,12 @@ function setStatus(text: string): void {
 
 function showError(message: string): void {
   connectError.textContent = message;
+}
+
+function showErrorPopup(message: string): void {
+  errorPopupMsg.textContent = message;
+  errorOverlay.style.display = "flex";
+  roomIdInput.value = "";
 }
 
 function clearError(): void {
@@ -92,6 +102,11 @@ async function startSharingFirstSource(): Promise<void> {
     if (sharingSourceName) {
       sharingSourceName.textContent = firstSource.name;
     }
+    peerManager.broadcastToViewers({
+      type: "source-changed",
+      sourceId: firstSource.id,
+      name: firstSource.name,
+    });
     setStatus(`화면 공유 중: ${firstSource.name}`);
   } catch (err) {
     showError("화면 캡처 실패: " + String(err));
@@ -99,7 +114,20 @@ async function startSharingFirstSource(): Promise<void> {
 }
 
 async function switchSource(sourceId: string): Promise<void> {
-  if (sourceId === currentSourceId) return;
+  if (sourceId === currentSourceId) {
+    // 같은 소스여도 bounds를 재설정하고 뷰어에 응답
+    if (window.hostAPI) {
+      try {
+        const sources = await window.hostAPI.getScreenSources();
+        const current = sources.find((s) => s.id === sourceId);
+        if (current) {
+          window.hostAPI.setActiveBounds(current.bounds, current.scaleFactor);
+          peerManager.broadcastToViewers({ type: "source-changed", sourceId: current.id, name: current.name });
+        }
+      } catch {}
+    }
+    return;
+  }
 
   let sources: ScreenSource[];
   try {
@@ -156,9 +184,8 @@ peerManager.setOnSwitchSource((sourceId) => {
   );
 });
 
-connectBtn.addEventListener("click", async () => {
+async function attemptConnect(): Promise<void> {
   if (isConnected) {
-    // 연결 종료: 확인 팝업 표시
     confirmOverlay.style.display = "flex";
     return;
   }
@@ -185,6 +212,20 @@ connectBtn.addEventListener("click", async () => {
   }
 
   signaling.send({ type: "join", roomId, password: DUMMY_PASS });
+}
+
+connectBtn.addEventListener("click", () => {
+  if (isConnected) {
+    confirmOverlay.style.display = "flex";
+  }
+});
+
+// 접속번호 6자리 입력 시 자동 연결
+roomIdInput.addEventListener("input", () => {
+  const val = roomIdInput.value.trim();
+  if (val.length === 6 && /^\d{6}$/.test(val) && !isConnected) {
+    attemptConnect().catch(() => {});
+  }
 });
 
 signaling.onMessage((msg) => {
@@ -199,9 +240,9 @@ signaling.onMessage((msg) => {
       break;
 
     case "error":
-      showError(`오류: ${msg.message}`);
       setConnectBtnState(false);
       setStatus("대기 중");
+      showErrorPopup("접속번호를 확인하고 다시 입력해주세요.");
       break;
   }
 });
@@ -211,12 +252,20 @@ function startSysInfoBroadcast(): void {
   const send = async (): Promise<void> => {
     if (!window.hostAPI || peerManager.viewerCount === 0) return;
     try {
-      const info = await window.hostAPI.getSystemInfo();
-      peerManager.broadcastToViewers({ type: "host-info", info });
+      const [info, diag] = await Promise.allSettled([
+        window.hostAPI.getSystemInfo(),
+        window.hostAPI.getSystemDiagnostics(),
+      ]);
+      if (info.status === "fulfilled") {
+        peerManager.broadcastToViewers({ type: "host-info", info: info.value });
+      }
+      if (diag.status === "fulfilled") {
+        peerManager.broadcastToViewers({ type: "host-diagnostics", diagnostics: diag.value });
+      }
     } catch {}
   };
   send();
-  sysInfoTimer = setInterval(send, 5000);
+  sysInfoTimer = setInterval(send, 3000);
 }
 
 function stopSysInfoBroadcast(): void {
@@ -282,4 +331,9 @@ confirmCancel.addEventListener("click", () => {
 confirmOk.addEventListener("click", () => {
   confirmOverlay.style.display = "none";
   disconnectAll();
+});
+
+errorPopupOk.addEventListener("click", () => {
+  errorOverlay.style.display = "none";
+  roomIdInput.focus();
 });

@@ -171,6 +171,22 @@ export class PeerManager {
         const msg = JSON.parse(event.data as string) as DataChannelMessage;
         if (msg.type === "switch-source") {
           this.onSwitchSource?.(msg.sourceId);
+        } else if (msg.type === "execute-macro") {
+          const { macroId, command, commandType } = msg;
+          window.hostAPI.executeCommand({ command, commandType })
+            .then((result) => {
+              const dc = this.peers.get(viewerId)?.dc;
+              if (dc?.readyState === "open") {
+                dc.send(JSON.stringify({ type: "macro-result", macroId, ...result }));
+              }
+            })
+            .catch((err: unknown) => {
+              console.error("[peer-manager] executeCommand error:", err);
+              const dc = this.peers.get(viewerId)?.dc;
+              if (dc?.readyState === "open") {
+                dc.send(JSON.stringify({ type: "macro-result", macroId, success: false, output: "", error: String(err) }));
+              }
+            });
         } else {
           window.hostAPI.injectInput(msg as InputMessage);
         }

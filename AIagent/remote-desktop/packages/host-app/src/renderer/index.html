@@ -22,7 +22,7 @@
       <section class="connect-section">
         <h2>뷰어 접속</h2>
         <div class="form-row">
-          <label for="server-url">시그널링 서버</label>
+          <label for="server-url">중계서버</label>
           <input
             id="server-url"
             type="text"
@@ -41,7 +41,7 @@
             autocomplete="off"
           />
         </div>
-        <button id="connect-btn" class="btn-primary" data-state="disconnected">연결</button>
+        <button id="connect-btn" class="btn-danger" data-state="disconnected" style="display:none">연결 종료</button>
         <div id="connect-error" class="error-text"></div>
       </section>
 
@@ -66,6 +66,16 @@
         <div class="confirm-buttons">
           <button id="confirm-cancel" class="btn-secondary">취소</button>
           <button id="confirm-ok" class="btn-danger">종료</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 접속번호 오류 팝업 -->
+    <div id="error-overlay" class="confirm-overlay" style="display:none">
+      <div class="confirm-dialog">
+        <p class="confirm-message" id="error-popup-msg">접속번호를 확인하고 다시 입력해주세요.</p>
+        <div class="confirm-buttons">
+          <button id="error-popup-ok" class="btn-primary">확인</button>
         </div>
       </div>
     </div>

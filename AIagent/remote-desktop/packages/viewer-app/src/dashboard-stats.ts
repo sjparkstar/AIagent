@@ -5,6 +5,8 @@ interface DashboardData {
   todaySessions: number;
   avgDurationMin: number;
   avgRttMs: number;
+  macroCount: number;
+  playbookCount: number;
   recentSessions: {
     id: string;
     roomId: string;
@@ -20,7 +22,7 @@ export async function loadDashboardStats(): Promise<DashboardData> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [totalRes, todayRes, recentRes] = await Promise.all([
+  const [totalRes, todayRes, recentRes, macroRes, playbookRes] = await Promise.all([
     supabase.from("connection_sessions").select("id", { count: "exact", head: true }),
     supabase
       .from("connection_sessions")
@@ -31,6 +33,14 @@ export async function loadDashboardStats(): Promise<DashboardData> {
       .select("id, room_id, connected_at, disconnected_at, host_os, avg_rtt_ms, disconnect_reason")
       .order("connected_at", { ascending: false })
       .limit(10),
+    supabase
+      .from("assistant_logs")
+      .select("id", { count: "exact", head: true })
+      .ilike("content", "%매크로 실행 중%"),
+    supabase
+      .from("assistant_logs")
+      .select("id", { count: "exact", head: true })
+      .ilike("content", "%플레이북 시작%"),
   ]);
 
   const recent = recentRes.data ?? [];
@@ -58,6 +68,8 @@ export async function loadDashboardStats(): Promise<DashboardData> {
     todaySessions: todayRes.count ?? 0,
     avgDurationMin: durationCount > 0 ? Math.round(avgDuration / durationCount * 10) / 10 : 0,
     avgRttMs: rttCount > 0 ? Math.round(avgRtt / rttCount) : 0,
+    macroCount: macroRes.count ?? 0,
+    playbookCount: playbookRes.count ?? 0,
     recentSessions: recent.map((s) => ({
       id: s.id,
       roomId: s.room_id,
@@ -76,6 +88,8 @@ export function renderDashboard(data: DashboardData): void {
   el("stat-today")!.textContent = String(data.todaySessions);
   el("stat-avg-duration")!.textContent = data.avgDurationMin > 0 ? `${data.avgDurationMin}m` : "-";
   el("stat-avg-rtt")!.textContent = data.avgRttMs > 0 ? `${data.avgRttMs}ms` : "-";
+  el("stat-macro-count")!.textContent = String(data.macroCount);
+  el("stat-playbook-count")!.textContent = String(data.playbookCount);
 
   const list = el("session-list")!;
 
@@ -163,8 +177,32 @@ export async function loadSessionDetail(sessionId: string): Promise<string> {
     </div>`;
 
   const logs = logsRes.data ?? [];
-  if (logs.length > 0) {
-    const logItems = logs.map((l) => {
+
+  // 매크로/플레이북 실행 기록 필터링
+  const macroLogs = logs.filter((l) =>
+    l.content?.includes("매크로 실행 중") || l.content?.includes("매크로 완료") || l.content?.includes("매크로 실패") ||
+    l.content?.includes("플레이북 시작") || l.content?.includes("플레이북 완료") || l.content?.includes("플레이북 오류") ||
+    l.content?.startsWith("✅") || l.content?.startsWith("❌") || l.content?.startsWith("⏳") || l.content?.startsWith("⚠️")
+  );
+
+  if (macroLogs.length > 0) {
+    const macroItems = macroLogs.map((l) => {
+      const time = new Date(l.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const preview = (l.content ?? "").length > 200 ? l.content.slice(0, 200) + "..." : l.content;
+      return `<div class="ai-log-item ${l.role}"><div>${preview}</div><div class="ai-log-time">${time}</div></div>`;
+    }).join("");
+
+    html += `
+      <div class="detail-section">
+        <div class="detail-section-title">매크로/플레이북 실행 기록 (${macroLogs.length}건)</div>
+        <div class="ai-log-list">${macroItems}</div>
+      </div>`;
+  }
+
+  // AI 대화 기록 (매크로/플레이북 제외)
+  const chatLogs = logs.filter((l) => !macroLogs.includes(l));
+  if (chatLogs.length > 0) {
+    const logItems = chatLogs.map((l) => {
       const time = new Date(l.created_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       const preview = (l.content ?? "").length > 300 ? l.content.slice(0, 300) + "..." : l.content;
       return `<div class="ai-log-item ${l.role}"><div>${preview}</div><div class="ai-log-time">${time}</div></div>`;
@@ -172,7 +210,7 @@ export async function loadSessionDetail(sessionId: string): Promise<string> {
 
     html += `
       <div class="detail-section">
-        <div class="detail-section-title">AI Assistant 기록 (${logs.length}건)</div>
+        <div class="detail-section-title">AI Assistant 기록 (${chatLogs.length}건)</div>
         <div class="ai-log-list">${logItems}</div>
       </div>`;
   }

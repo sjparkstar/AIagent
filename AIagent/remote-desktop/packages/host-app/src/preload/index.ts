@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { InputMessage, HostSystemInfo } from "@remote-desktop/shared";
+import type { InputMessage, HostSystemInfo, SystemDiagnostics } from "@remote-desktop/shared";
 import type { ScreenSource } from "../main/capture";
 import type { HostAPI } from "../shared-types";
 
@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("hostAPI", {
 
   getSystemInfo: (): Promise<HostSystemInfo> =>
     ipcRenderer.invoke("get-system-info"),
+
+  getSystemDiagnostics: (): Promise<SystemDiagnostics> =>
+    ipcRenderer.invoke("get-system-diagnostics"),
 
   injectInput: (msg: InputMessage): void =>
     ipcRenderer.send("inject-input", msg),
@@ -27,4 +30,7 @@ contextBridge.exposeInMainWorld("hostAPI", {
     ipcRenderer.on("viewer-left", handler);
     return () => ipcRenderer.removeListener("viewer-left", handler);
   },
+
+  executeCommand: (data: { command: string; commandType: string }): Promise<{ success: boolean; output: string; error?: string }> =>
+    ipcRenderer.invoke("execute-command", data),
 } satisfies HostAPI);
