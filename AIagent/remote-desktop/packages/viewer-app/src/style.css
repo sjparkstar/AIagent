@@ -80,7 +80,7 @@ html, body {
 
 .stats-cards {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
 
@@ -795,13 +795,17 @@ html, body {
   height: 100%;
   object-fit: contain;
   background: #000;
-  cursor: crosshair;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24'%3E%3Cpath d='M4 1L4 19L9.5 13.5L14.5 22L17.5 20.5L12.5 12L20 12Z' fill='%23222' stroke='%23fff' stroke-width='1.2'/%3E%3C/svg%3E") 2 1, default;
   display: block;
   outline: none;
 }
 
 #remote-video:focus {
   outline: none;
+}
+
+#remote-video:active {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32'%3E%3Cpath d='M4 1L4 19L9.5 13.5L14.5 22L17.5 20.5L12.5 12L20 12Z' fill='%23222' stroke='%23fff' stroke-width='1.2'/%3E%3Ccircle cx='24' cy='8' r='6' fill='%23e8eef8' stroke='%234f8ef7' stroke-width='1.5'/%3E%3Cpath d='M24 5.5V10.5M21.5 8H26.5' stroke='%234f8ef7' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E") 2 1, default;
 }
 
 /* ── 상태 바 ──────────────────────────────────────── */

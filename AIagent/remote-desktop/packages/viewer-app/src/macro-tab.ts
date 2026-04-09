@@ -3,6 +3,7 @@ import type { Macro } from "./macro-manager.js";
 import { fetchPlaybooks } from "./playbook-manager.js";
 import type { Playbook, PlaybookStep } from "./playbook-manager.js";
 import type { PeerConnection } from "./peer.js";
+import { logAssistantMessage } from "./session-logger.js";
 import type { UI } from "./ui.js";
 
 // PlaybookStep, Playbook 타입은 playbook-manager.ts에서 import
@@ -129,22 +130,26 @@ function runMacro(m: Macro, getPeer: () => PeerConnection | null, ui: UI): void 
   switchToAiTab?.();
   const macroId = `${m.id}-${Date.now()}`;
 
-  if (m.is_dangerous) {
-    ui.addAssistantMessage("system", `⚠️ 위험 매크로 실행 중: ${m.name}`);
-  } else {
-    ui.addAssistantMessage("system", `매크로 실행 중: ${m.name}`);
-  }
+  const statusMsg = m.is_dangerous ? `⚠️ 위험 매크로 실행 중: ${m.name}` : `매크로 실행 중: ${m.name}`;
+  ui.addAssistantMessage("system", statusMsg);
+  logAssistantMessage("system", statusMsg).catch(() => {});
 
   sendMacroCommand(getPeer, macroId, m.command, m.command_type)
     .then((result) => {
       if (result.success) {
-        ui.addAssistantMessage("assistant", `✅ ${m.name} 완료\n\n${result.output.slice(0, 500)}`);
+        const msg = `✅ ${m.name} 완료\n\n${result.output.slice(0, 500)}`;
+        ui.addAssistantMessage("assistant", msg);
+        logAssistantMessage("assistant", msg).catch(() => {});
       } else {
-        ui.addAssistantMessage("system", `❌ ${m.name} 실패\n\n${result.error ?? result.output}`);
+        const msg = `❌ ${m.name} 실패\n\n${result.error ?? result.output}`;
+        ui.addAssistantMessage("system", msg);
+        logAssistantMessage("system", msg).catch(() => {});
       }
     })
     .catch((err: unknown) => {
-      ui.addAssistantMessage("system", `매크로 실행 오류: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = `매크로 실행 오류: ${err instanceof Error ? err.message : String(err)}`;
+      ui.addAssistantMessage("system", msg);
+      logAssistantMessage("system", msg).catch(() => {});
     });
 }
 
@@ -195,7 +200,9 @@ function runPlaybook(
 
   switchToAiTab?.();
   triggerBtn.disabled = true;
-  ui.addAssistantMessage("system", `▶ 플레이북 시작: ${playbook.name}`);
+  const startMsg = `▶ 플레이북 시작: ${playbook.name}`;
+  ui.addAssistantMessage("system", startMsg);
+  logAssistantMessage("system", startMsg).catch(() => {});
 
   const sendCommand = (command: string, commandType: string) => {
     const macroId = `pb-${playbook.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -214,12 +221,18 @@ function runPlaybook(
       };
       const label = statusLabel[status] ?? "";
       const detail = output ? `\n${output}` : "";
-      ui.addAssistantMessage(status === "failed" ? "system" : "assistant", `${label} ${stepName}${detail}`);
+      const stepMsg = `${label} ${stepName}${detail}`;
+      ui.addAssistantMessage(status === "failed" ? "system" : "assistant", stepMsg);
+      logAssistantMessage(status === "failed" ? "system" : "assistant", stepMsg).catch(() => {});
     }
   ).then(() => {
-    ui.addAssistantMessage("assistant", `플레이북 완료: ${playbook.name}`);
+    const doneMsg = `플레이북 완료: ${playbook.name}`;
+    ui.addAssistantMessage("assistant", doneMsg);
+    logAssistantMessage("assistant", doneMsg).catch(() => {});
   }).catch((err: unknown) => {
-    ui.addAssistantMessage("system", `플레이북 오류: ${err instanceof Error ? err.message : String(err)}`);
+    const errMsg = `플레이북 오류: ${err instanceof Error ? err.message : String(err)}`;
+    ui.addAssistantMessage("system", errMsg);
+    logAssistantMessage("system", errMsg).catch(() => {});
   }).finally(() => {
     triggerBtn.disabled = false;
   });

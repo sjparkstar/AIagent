@@ -9,8 +9,10 @@
     "dev:electron": "node scripts/wait-and-start.js",
     "build:main": "esbuild src/main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --external:@jitsi/robotjs --external:os --external:child_process --format=cjs",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --outfile=dist/preload/index.js --external:electron --format=cjs",
-    "build:renderer": "vite build src/renderer --config vite.renderer.config.ts --outDir ../../dist/renderer",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
     "build": "npm run build:main && npm run build:preload && npm run build:renderer",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

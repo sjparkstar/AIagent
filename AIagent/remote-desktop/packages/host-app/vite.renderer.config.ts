@@ -15,4 +15,5 @@ export default defineConfig({
     outDir: resolve(__dirname, "dist/renderer"),
     emptyOutDir: true,
   },
+  base: "./",
 });

@@ -12,15 +12,24 @@
   "win": {
     "target": [
       {
-        "target": "dir",
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
         "arch": ["x64"]
       }
     ],
     "signAndEditExecutable": false
   },
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false,
+    "artifactName": "RemoteDesktopHost-Setup-${version}.exe"
+  },
   "forceCodeSigning": false,
   "portable": {
-    "artifactName": "RemoteDesktopHost.exe"
+    "artifactName": "RemoteDesktopHost-Portable-${version}.exe"
   },
   "npmRebuild": true,
   "asar": true,

@@ -88,8 +88,6 @@ export function renderDashboard(data: DashboardData): void {
   el("stat-today")!.textContent = String(data.todaySessions);
   el("stat-avg-duration")!.textContent = data.avgDurationMin > 0 ? `${data.avgDurationMin}m` : "-";
   el("stat-avg-rtt")!.textContent = data.avgRttMs > 0 ? `${data.avgRttMs}ms` : "-";
-  el("stat-macro-count")!.textContent = String(data.macroCount);
-  el("stat-playbook-count")!.textContent = String(data.playbookCount);
 
   const list = el("session-list")!;
 
