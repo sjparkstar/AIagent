@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
@@ -15,6 +16,7 @@ class PeerManager {
   Function(Map<String, dynamic>)? onDataChannelMessage;
   // 컨트롤 메시지 (source-changed, execute-macro 등 입력 제어 외 메시지)
   Function(Map<String, dynamic>)? onControlMessage;
+  Function(RTCPeerConnectionState state)? onPeerConnectionState;
   Function(RTCIceCandidate candidate, String viewerId)? onIceCandidate;
   Function(RTCSessionDescription answer, String viewerId)? onAnswerReady;
 
@@ -93,12 +95,61 @@ class PeerManager {
     }
   }
 
+  // 모니터 bounds 캐시 (PowerShell 1회만 실행)
+  List<Map<String, dynamic>>? _monitorBoundsCache;
+
+  Future<Map<String, dynamic>?> getMonitorBounds(int index) async {
+    if (Platform.isMacOS) return null;
+
+    if (_monitorBoundsCache != null) {
+      return index < _monitorBoundsCache!.length ? _monitorBoundsCache![index] : null;
+    }
+
+    try {
+      // DPI-unaware 모드: Screen.Bounds가 물리적 해상도 반환
+      final r = await Process.run('powershell', [
+        '-NoProfile', '-Command',
+        r"Add-Type -AssemblyName System.Windows.Forms; "
+        r"foreach($s in [System.Windows.Forms.Screen]::AllScreens) { "
+        r"  $b = $s.Bounds; "
+        r"  Write-Output ('{0},{1},{2},{3}' -f $b.X, $b.Y, $b.Width, $b.Height) "
+        r"}"
+      ], runInShell: true).timeout(const Duration(seconds: 5));
+
+      final lines = r.stdout.toString().split('\n')
+          .map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+
+      _monitorBoundsCache = lines.map((line) {
+        final p = line.split(',');
+        if (p.length >= 4) {
+          return <String, dynamic>{
+            'x': int.tryParse(p[0].trim()) ?? 0,
+            'y': int.tryParse(p[1].trim()) ?? 0,
+            'width': int.tryParse(p[2].trim()) ?? 1920,
+            'height': int.tryParse(p[3].trim()) ?? 1080,
+            'scaleFactor': 1.0,
+          };
+        }
+        return <String, dynamic>{'x': 0, 'y': 0, 'width': 1920, 'height': 1080, 'scaleFactor': 1.0};
+      }).toList();
+
+      debugPrint('[peer] 모니터 bounds 캐시: $_monitorBoundsCache');
+      return index < _monitorBoundsCache!.length ? _monitorBoundsCache![index] : null;
+    } catch (e) {
+      debugPrint('[peer] 모니터 bounds 조회 실패: $e');
+    }
+    return null;
+  }
+
   Future<void> switchSource(String sourceId) async {
     if (_activeSourceId == sourceId && _localStream != null) {
-      // 같은 소스: source-changed만 재전송
       final source = _capturedSources.where((s) => s.id == sourceId).firstOrNull;
       if (source != null) {
-        sendToViewer({'type': 'source-changed', 'sourceId': source.id, 'name': source.name});
+        final bounds = await getMonitorBounds(int.tryParse(sourceId) ?? 0);
+        sendToViewer({
+          'type': 'source-changed', 'sourceId': source.id, 'name': source.name,
+          if (bounds != null) 'bounds': bounds,
+        });
       }
       return;
     }
@@ -137,8 +188,12 @@ class PeerManager {
       _localStream = newStream;
       _activeSourceId = sourceId;
 
-      sendToViewer({'type': 'source-changed', 'sourceId': source.id, 'name': source.name});
-      debugPrint('[peer] 소스 전환 완료: ${source.name}');
+      final bounds = await getMonitorBounds(int.tryParse(sourceId) ?? 0);
+      sendToViewer({
+        'type': 'source-changed', 'sourceId': source.id, 'name': source.name,
+        if (bounds != null) 'bounds': bounds,
+      });
+      debugPrint('[peer] 소스 전환 완료: ${source.name} bounds=$bounds');
     } catch (e) {
       debugPrint('[peer] 소스 전환 실패: $e');
     }
@@ -146,10 +201,13 @@ class PeerManager {
 
   void sendToViewer(Map<String, dynamic> msg) {
     if (_dc == null || _dc!.state != RTCDataChannelState.RTCDataChannelOpen) {
-      debugPrint('[peer] DataChannel 미연결 상태에서 전송 시도 무시');
       return;
     }
+    final type = msg['type'] ?? '';
     _dc!.send(RTCDataChannelMessage(jsonEncode(msg)));
+    if (type == 'host-info' || type == 'host-diagnostics') {
+      debugPrint('[peer] 전송: $type');
+    }
   }
 
   void close() {
@@ -162,6 +220,7 @@ class PeerManager {
     _localStream = null;
     _capturedSources = [];
     _activeSourceId = '';
+    _monitorBoundsCache = null;
   }
 
   MediaStream? get localStream => _localStream;
@@ -186,7 +245,7 @@ class PeerManager {
       ..ordered = true;
     _dc = await _pc!.createDataChannel('input', dcInit);
 
-    _dc!.onDataChannelState = (RTCDataChannelState state) {
+    _dc!.onDataChannelState = (RTCDataChannelState state) async {
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
         debugPrint('[peer] DataChannel 열림 — 화면 소스 목록 전송');
         sendToViewer({
@@ -196,6 +255,15 @@ class PeerManager {
               .toList(),
           'activeSourceId': _activeSourceId,
         });
+        // 활성 소스의 bounds도 전송
+        final activeSrc = _capturedSources.where((s) => s.id == _activeSourceId).firstOrNull;
+        if (activeSrc != null) {
+          final bounds = await getMonitorBounds(int.tryParse(_activeSourceId) ?? 0);
+          sendToViewer({
+            'type': 'source-changed', 'sourceId': activeSrc.id, 'name': activeSrc.name,
+            if (bounds != null) 'bounds': bounds,
+          });
+        }
       }
     };
 
@@ -223,6 +291,7 @@ class PeerManager {
 
     _pc!.onConnectionState = (RTCPeerConnectionState state) {
       debugPrint('[peer] 연결 상태 변경: $state');
+      onPeerConnectionState?.call(state);
     };
   }
 }

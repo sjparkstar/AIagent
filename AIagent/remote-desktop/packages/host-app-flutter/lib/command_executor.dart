@@ -43,15 +43,18 @@ class CommandExecutor {
   ) async {
     switch (commandType) {
       case 'powershell':
-        final wrappedCmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $command';
-        final encoded = _encodeForPowerShell(wrappedCmd);
-        return Process.run(
-          'powershell',
-          ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-          runInShell: true,
-          stdoutEncoding: null,
-          stderrEncoding: null,
-        );
+        if (Platform.isWindows) {
+          final wrappedCmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $command';
+          final encoded = _encodeForPowerShell(wrappedCmd);
+          return Process.run(
+            'powershell',
+            ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+            runInShell: true,
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          );
+        }
+        return Process.run('sh', ['-c', command], runInShell: true, stdoutEncoding: null, stderrEncoding: null);
 
       case 'shell':
         final parts = command.split(' ');
@@ -65,13 +68,16 @@ class CommandExecutor {
 
       case 'cmd':
       default:
-        return Process.run(
-          'cmd',
-          ['/c', 'chcp 65001 >nul 2>&1 & $command'],
-          runInShell: true,
-          stdoutEncoding: null,
-          stderrEncoding: null,
-        );
+        if (Platform.isWindows) {
+          return Process.run(
+            'cmd',
+            ['/c', 'chcp 65001 >nul 2>&1 & $command'],
+            runInShell: true,
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          );
+        }
+        return Process.run('sh', ['-c', command], runInShell: true, stdoutEncoding: null, stderrEncoding: null);
     }
   }
 

@@ -13,9 +13,10 @@ let cpuHistory: number[] = [];
 
 export function runDiagnosis(diag: SystemDiagnostics): DiagnosisResult[] {
   const results: DiagnosisResult[] = [];
+  if (!diag?.system) return results;
   const s = diag.system;
-  const n = diag.network;
-  const p = diag.processes;
+  const n = diag.network ?? { interfaces: [], gateway: "", dns: [], internetConnected: false, wifi: null, vpnConnected: false };
+  const p = diag.processes ?? { topCpu: [], services: [] };
 
   // ── 1. CPU 과부하 ─────────────────────────────────
   cpuHistory.push(s.cpuUsage);

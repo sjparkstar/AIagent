@@ -3,15 +3,60 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:io' show Platform;
+import 'package:ffi/ffi.dart';
 import 'signaling.dart';
 import 'peer_manager.dart';
 import 'input_handler.dart';
 import 'command_executor.dart';
 import 'system_diagnostics.dart';
 
+// Win32 윈도우 제어 — Windows에서만 초기화
+late final _ShowWindowDart _showWindow;
+late final _SetForegroundWindowDart _setForegroundWindow;
+late final _FindWindowWDart _findWindowW;
+
+typedef _ShowWindowNative = Int32 Function(IntPtr hWnd, Int32 nCmdShow);
+typedef _ShowWindowDart = int Function(int hWnd, int nCmdShow);
+typedef _SetForegroundWindowNative = Int32 Function(IntPtr hWnd);
+typedef _SetForegroundWindowDart = int Function(int hWnd);
+typedef _FindWindowWNative = IntPtr Function(Pointer<Utf16> lpClassName, Pointer<Utf16> lpWindowName);
+typedef _FindWindowWDart = int Function(Pointer<Utf16> lpClassName, Pointer<Utf16> lpWindowName);
+
+void _initWin32() {
+  if (!Platform.isWindows) return;
+  final user32 = DynamicLibrary.open('user32.dll');
+  _showWindow = user32.lookupFunction<_ShowWindowNative, _ShowWindowDart>('ShowWindow');
+  _setForegroundWindow = user32.lookupFunction<_SetForegroundWindowNative, _SetForegroundWindowDart>('SetForegroundWindow');
+  _findWindowW = user32.lookupFunction<_FindWindowWNative, _FindWindowWDart>('FindWindowW');
+}
+
+int _findAppWindow() {
+  final title = 'RemoteCall-mini Host'.toNativeUtf16();
+  final hwnd = _findWindowW(nullptr, title);
+  calloc.free(title);
+  return hwnd;
+}
+
+void minimizeAppWindow() {
+  if (!Platform.isWindows) return;
+  final hwnd = _findAppWindow();
+  if (hwnd != 0) _showWindow(hwnd, 6); // SW_MINIMIZE = 6
+}
+
+void restoreAppWindow() {
+  if (!Platform.isWindows) return;
+  final hwnd = _findAppWindow();
+  if (hwnd != 0) {
+    _showWindow(hwnd, 9); // SW_RESTORE = 9
+    _setForegroundWindow(hwnd);
+  }
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  _initWin32();
   runApp(const HostApp());
 }
 
@@ -73,7 +118,7 @@ class HostHomePage extends StatefulWidget {
 
 class _HostHomePageState extends State<HostHomePage> {
   final _serverUrlController = TextEditingController(
-    text: 'ws://localhost:8080',
+    text: 'ws://10.2.107.45:8080',
   );
   final _roomIdController = TextEditingController();
   final _previewRenderer = RTCVideoRenderer();
@@ -84,6 +129,7 @@ class _HostHomePageState extends State<HostHomePage> {
   final _commandExecutor = CommandExecutor();
   final _diagnostics = SystemDiagnostics();
   Timer? _diagTimer;
+  Timer? _fullDiagTimer;
 
   ConnectionState _connState = ConnectionState.idle;
   String _statusMessage = '대기 중';
@@ -134,6 +180,14 @@ class _HostHomePageState extends State<HostHomePage> {
     _peerManager.onControlMessage = (msg) {
       _handleControlMessage(msg);
     };
+    _peerManager.onPeerConnectionState = (state) {
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        _startDiagTimer();
+      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        _disconnect();
+      }
+    };
   }
 
   Future<void> _handleControlMessage(Map<String, dynamic> msg) async {
@@ -144,6 +198,18 @@ class _HostHomePageState extends State<HostHomePage> {
         if (sourceId != null) {
           debugPrint('[control] switch-source: $sourceId');
           await _peerManager.switchSource(sourceId);
+          // 전환된 모니터의 bounds로 input_handler 업데이트
+          final bounds = await _peerManager.getMonitorBounds(int.tryParse(sourceId) ?? 0);
+          if (bounds != null) {
+            _inputHandler.setActiveBounds(ScreenBounds(
+              left: (bounds['x'] as num?)?.toInt() ?? 0,
+              top: (bounds['y'] as num?)?.toInt() ?? 0,
+              width: (bounds['width'] as num?)?.toInt() ?? 1920,
+              height: (bounds['height'] as num?)?.toInt() ?? 1080,
+              scaleFactor: (bounds['scaleFactor'] as num?)?.toDouble() ?? 1.0,
+            ));
+            debugPrint('[control] bounds 업데이트: $bounds');
+          }
         }
       case 'source-changed':
         final bounds = msg['bounds'] as Map<String, dynamic>?;
@@ -176,7 +242,10 @@ class _HostHomePageState extends State<HostHomePage> {
 
   Future<void> _connectToRoom(String roomId) async {
     final serverUrl = _serverUrlController.text.trim();
-    if (serverUrl.isEmpty) return;
+    if (serverUrl.isEmpty) {
+      _showErrorDialog('연결 오류', '중계서버 주소를 입력해주세요.\n예: ws://192.168.0.10:8080');
+      return;
+    }
 
     setState(() {
       _connState = ConnectionState.connecting;
@@ -222,7 +291,7 @@ class _HostHomePageState extends State<HostHomePage> {
             _connState = ConnectionState.connected;
             _statusMessage = '방 참가 완료 — 뷰어 대기 중';
           });
-          _startDiagTimer();
+          minimizeAppWindow();
         }
 
       case 'offer':
@@ -242,7 +311,7 @@ class _HostHomePageState extends State<HostHomePage> {
             _connState = ConnectionState.error;
             _statusMessage = '오류: $message';
           });
-          _showErrorDialog('서버 오류', message);
+          _showErrorDialog('연결 실패', '접속번호를 확인하신 후 입력해주세요.');
         }
     }
   }
@@ -264,6 +333,18 @@ class _HostHomePageState extends State<HostHomePage> {
         _previewRenderer.srcObject = stream;
         setState(() => _statusMessage = '뷰어와 연결됨');
       }
+
+      // 최초 캡처 소스의 bounds로 input_handler 초기화
+      final initialBounds = await _peerManager.getMonitorBounds(0);
+      if (initialBounds != null) {
+        _inputHandler.setActiveBounds(ScreenBounds(
+          left: (initialBounds['x'] as num?)?.toInt() ?? 0,
+          top: (initialBounds['y'] as num?)?.toInt() ?? 0,
+          width: (initialBounds['width'] as num?)?.toInt() ?? 1920,
+          height: (initialBounds['height'] as num?)?.toInt() ?? 1080,
+        ));
+        debugPrint('[main] 최초 bounds 설정: $initialBounds');
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -275,35 +356,105 @@ class _HostHomePageState extends State<HostHomePage> {
     }
   }
 
+  bool _fullDiagRunning = false;
+
   void _startDiagTimer() {
     _stopDiagTimer();
+
+    // host-info: 3초마다 (경량)
     _diagTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!_peerManager.isConnected) {
-        _stopDiagTimer();
-        return;
-      }
+      if (!_peerManager.isConnected) { _stopDiagTimer(); return; }
       try {
         final basic = await _diagnostics.collectBasic();
         _peerManager.sendToViewer({
           'type': 'host-info',
           'info': {
-            'os': '${basic['os']} ${Platform.operatingSystem}',
-            'version': basic['osVersion'] ?? '',
-            'cpuModel': 'CPU x${basic['cpuCount']}',
-            'cpuUsage': 0,
-            'memTotal': basic['totalMemoryMB'] ?? 0,
-            'memUsed': (basic['totalMemoryMB'] ?? 0) - (basic['freeMemoryMB'] ?? 0),
-            'uptime': 0,
+            'os': Platform.operatingSystem,
+            'version': (basic['osVersion'] ?? '').toString(),
+            'cpuModel': '${Platform.numberOfProcessors} cores',
+            'cpuUsage': (basic['cpuUsage'] as num?)?.toInt() ?? 0,
+            'memTotal': (basic['totalMemoryMB'] as num?)?.toInt() ?? 0,
+            'memUsed': ((basic['totalMemoryMB'] as num?)?.toInt() ?? 0) - ((basic['freeMemoryMB'] as num?)?.toInt() ?? 0),
+            'uptime': (basic['uptime'] as num?)?.toInt() ?? 0,
           },
         });
+      } catch (e) { debugPrint('[diag] host-info 전송 실패: $e'); }
+    });
 
+    // host-diagnostics: 10초마다 (무거움 - 프로세스 수집 포함)
+    _fullDiagTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (!_peerManager.isConnected || _fullDiagRunning) return;
+      _fullDiagRunning = true;
+      try {
         final diag = await _diagnostics.collect();
+        final sys = diag['system'] as Map<String, dynamic>? ?? {};
+        final memTotal = (sys['totalMemoryMB'] as num?)?.toInt() ?? 0;
+        final memFree = (sys['freeMemoryMB'] as num?)?.toInt() ?? 0;
+        final memUsed = memTotal - memFree;
         _peerManager.sendToViewer({
           'type': 'host-diagnostics',
-          'diagnostics': diag,
+          'diagnostics': {
+            'system': {
+              'os': Platform.operatingSystem,
+              'version': (sys['osVersion'] ?? '').toString(),
+              'build': '',
+              'pcName': (sys['hostname'] ?? '').toString(),
+              'userName': Platform.environment['USERNAME'] ?? '',
+              'bootTime': '',
+              'uptime': (sys['uptime'] as num?)?.toInt() ?? 0,
+              'cpuModel': '${Platform.numberOfProcessors} cores',
+              'cpuUsage': (sys['cpuUsage'] as num?)?.toInt() ?? 0,
+              'cpuCores': Platform.numberOfProcessors,
+              'memTotal': memTotal,
+              'memUsed': memUsed,
+              'memUsage': memTotal > 0 ? (memUsed * 100 ~/ memTotal) : 0,
+              'disks': ((sys['disks'] as List?) ?? []).map((d) {
+                final total = double.tryParse((d['totalGB'] ?? '0').toString()) ?? 0;
+                final free = double.tryParse((d['freeGB'] ?? '0').toString()) ?? 0;
+                final used = total - free;
+                return {
+                  'drive': d['id'] ?? '',
+                  'total': total.round(),
+                  'used': used.round(),
+                  'usage': total > 0 ? (used / total * 100).round() : 0,
+                };
+              }).toList(),
+              'battery': sys['battery'],
+              'isAdmin': false,
+            },
+            'processes': {
+              'topCpu': ((diag['processes'] as List?) ?? []).map((p) => {
+                'name': p['name'] ?? '',
+                'pid': p['pid'] ?? 0,
+                'cpu': 0,
+                'mem': p['memoryMB'] ?? 0,
+              }).toList(),
+              'services': [],
+            },
+            'network': () {
+              final net = diag['network'] as Map<String, dynamic>? ?? {};
+              final rawIfaces = (net['interfaces'] as List?) ?? [];
+              return {
+                'interfaces': rawIfaces.map((i) {
+                  final addrs = (i['addresses'] as List?) ?? [];
+                  return {'name': i['name'] ?? '', 'ip': addrs.isNotEmpty ? addrs.first : '', 'mac': '', 'type': 'ethernet'};
+                }).toList(),
+                'gateway': net['gateway'] ?? '',
+                'dns': (net['dns'] as List?) ?? [],
+                'internetConnected': net['internetAvailable'] ?? false,
+                'wifi': net['wifi'],
+                'vpnConnected': false,
+              };
+            }(),
+            'security': diag['security'] ?? {'firewallEnabled': false, 'defenderEnabled': false, 'uacEnabled': false, 'antivirusProducts': []},
+            'userEnv': diag['userEnv'] ?? {'monitors': [], 'defaultBrowser': '', 'printers': []},
+            'recentEvents': diag['recentEvents'] ?? [],
+          },
         });
       } catch (e) {
-        debugPrint('[diag] 진단 전송 실패: $e');
+        debugPrint('[diag] host-diagnostics 전송 실패: $e');
+      } finally {
+        _fullDiagRunning = false;
       }
     });
   }
@@ -311,13 +462,16 @@ class _HostHomePageState extends State<HostHomePage> {
   void _stopDiagTimer() {
     _diagTimer?.cancel();
     _diagTimer = null;
+    _fullDiagTimer?.cancel();
+    _fullDiagTimer = null;
   }
 
   void _disconnect({bool showEndDialog = false}) {
     _stopDiagTimer();
     final wasConnected = _connState == ConnectionState.connected;
-    _peerManager.close();
-    _signaling.disconnect();
+    if (wasConnected) restoreAppWindow();
+    try { _peerManager.close(); } catch (_) {}
+    try { _signaling.disconnect(); } catch (_) {}
     _previewRenderer.srcObject = null;
     setState(() {
       _connState = ConnectionState.idle;
@@ -580,7 +734,7 @@ class _HostHomePageState extends State<HostHomePage> {
       enabled: isEditable,
       style: const TextStyle(color: Color(0xFFe8eaf0), fontSize: 13),
       decoration: const InputDecoration(
-        hintText: 'ws://localhost:8080',
+        hintText: 'ws://서버IP:8080',
         hintStyle: TextStyle(color: Color(0xFF4a5068), fontSize: 13),
         contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         isDense: true,

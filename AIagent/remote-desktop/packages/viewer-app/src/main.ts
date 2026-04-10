@@ -139,15 +139,28 @@ function setupPeer(viewerId: string): void {
       lastSourceId = msg.sourceId;
       ui.setActiveMonitor(msg.sourceId);
     } else if (msg.type === "host-info") {
-      updateHostInfoUI(msg.info);
-      updateHostInfo(msg.info).catch(() => {});
+      try {
+        if (msg.info) {
+          updateHostInfoUI(msg.info);
+          updateHostInfo(msg.info).catch(() => {});
+        }
+      } catch (e) {
+        console.error("[main] host-info 처리 오류:", e);
+      }
     } else if (msg.type === "host-diagnostics") {
-      updateDiagnosticsUI(msg.diagnostics);
-      renderDiagnosisAlerts(runDiagnosis(msg.diagnostics));
-      const osStr = msg.diagnostics.system.os.toLowerCase();
-      if (osStr.includes("windows")) hostPlatform = "win32";
-      else if (osStr.includes("darwin")) hostPlatform = "darwin";
-      else if (osStr.includes("linux")) hostPlatform = "linux";
+      try {
+        const diag = msg.diagnostics;
+        if (diag?.system) {
+          updateDiagnosticsUI(diag);
+          renderDiagnosisAlerts(runDiagnosis(diag));
+          const osStr = (diag.system.os ?? "").toLowerCase();
+          if (osStr.includes("windows")) hostPlatform = "win32";
+          else if (osStr.includes("darwin")) hostPlatform = "darwin";
+          else if (osStr.includes("linux")) hostPlatform = "linux";
+        }
+      } catch (e) {
+        console.error("[main] host-diagnostics 처리 오류:", e);
+      }
     } else if (msg.type === "macro-result") {
       resolveMacroResult(msg.macroId, { success: msg.success, output: msg.output, error: msg.error });
     }
@@ -251,9 +264,9 @@ function updateHostInfoUI(info: HostSystemInfo): void {
   const memEl = document.getElementById("host-mem");
   const uptimeEl = document.getElementById("host-uptime");
 
-  if (osEl) osEl.textContent = `${info.os} ${info.version}`;
-  if (cpuEl) cpuEl.textContent = `${info.cpuUsage}% (${info.cpuModel.split(" ").slice(0, 3).join(" ")})`;
-  if (memEl) memEl.textContent = `${info.memUsed}MB / ${info.memTotal}MB (${Math.round(info.memUsed / info.memTotal * 100)}%)`;
+  if (osEl) osEl.textContent = `${info.os ?? "--"} ${info.version ?? ""}`;
+  if (cpuEl) cpuEl.textContent = `${info.cpuUsage ?? 0}% (${(info.cpuModel ?? "").split(" ").slice(0, 3).join(" ")})`;
+  if (memEl) memEl.textContent = `${info.memUsed ?? 0}MB / ${info.memTotal ?? 0}MB (${info.memTotal ? Math.round((info.memUsed ?? 0) / info.memTotal * 100) : 0}%)`;
   if (uptimeEl) uptimeEl.textContent = formatUptime(info.uptime);
 }
 

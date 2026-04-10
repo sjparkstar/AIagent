@@ -242,7 +242,7 @@ signaling.onMessage((msg) => {
     case "error":
       setConnectBtnState(false);
       setStatus("대기 중");
-      showErrorPopup("접속번호를 확인하고 다시 입력해주세요.");
+      showErrorPopup("접속번호를 확인하신 후 입력해주세요.");
       break;
   }
 });

@@ -137,6 +137,7 @@ class InputHandler {
   late final _GetSystemMetricsDart _getSystemMetrics;
   late final _MouseEventDart _mouseEvent;
   late final _KeybdEventDart _keybdEvent;
+  int Function(int)? _setThreadDpiAwareness;
 
   final bool _isWindows = Platform.isWindows;
 
@@ -145,6 +146,17 @@ class InputHandler {
 
     try {
       final user32 = DynamicLibrary.open('user32.dll');
+
+      // SetCursorPos 호출 시 DPI-unaware context 사용을 위한 함수
+      try {
+        _setThreadDpiAwareness = user32.lookupFunction<
+          IntPtr Function(IntPtr),
+          int Function(int)
+        >('SetThreadDpiAwarenessContext');
+        debugPrint('[input] SetThreadDpiAwarenessContext 사용 가능');
+      } catch (_) {
+        debugPrint('[input] SetThreadDpiAwarenessContext 사용 불가');
+      }
 
       _setCursorPos =
           user32.lookupFunction<_SetCursorPosNative, _SetCursorPosDart>(
@@ -209,18 +221,24 @@ class InputHandler {
 
   // ─── 좌표 변환 ─────────────────────────────────────────────────────────────
 
-  // 정규화 좌표(0~1)를 절대 화면 좌표로 변환
-  (int, int) _toAbsolute(double nx, double ny) {
+  // 주 모니터의 물리적 해상도로 직접 매핑 (DPI 문제 회피)
+  // SetCursorPos를 사용하되, 물리적 좌표를 직접 전달
+  // PerMonitorV2에서 GetSystemMetrics(SM_CXSCREEN)는 논리적 해상도를 반환
+  // 따라서 주 모니터의 물리적 해상도를 수동으로 계산
+
+  (int, int) _toPhysical(double nx, double ny) {
     if (_activeBounds != null) {
       final b = _activeBounds!;
-      final x = b.left + (nx * b.width / b.scaleFactor).round();
-      final y = b.top + (ny * b.height / b.scaleFactor).round();
+      // Electron과 동일한 공식: (bounds.x + nx * bounds.width) * scaleFactor
+      final sf = b.scaleFactor > 0 ? b.scaleFactor : 1.0;
+      final x = ((b.left + nx * b.width) * sf).round();
+      final y = ((b.top + ny * b.height) * sf).round();
       return (x, y);
     }
-    // activeBounds 없으면 주 모니터 전체 기준
-    final screenW = _getSystemMetrics(0); // SM_CXSCREEN = 0
-    final screenH = _getSystemMetrics(1); // SM_CYSCREEN = 1
-    return ((nx * screenW).round(), (ny * screenH).round());
+    // 폴백: 주 모니터
+    final sw = _getSystemMetrics(0);
+    final sh = _getSystemMetrics(1);
+    return ((nx * sw).round(), (ny * sh).round());
   }
 
   // ─── 마우스 핸들러 ─────────────────────────────────────────────────────────
@@ -228,8 +246,16 @@ class InputHandler {
   void _handleMouseMove(Map<String, dynamic> msg) {
     final nx = (msg['x'] as num).toDouble();
     final ny = (msg['y'] as num).toDouble();
-    final (x, y) = _toAbsolute(nx, ny);
+    final (x, y) = _toPhysical(nx, ny);
+    // DPI-unaware context로 전환 → SetCursorPos가 물리적 좌표 사용 → 복원
+    int? prev;
+    if (_setThreadDpiAwareness != null) {
+      prev = _setThreadDpiAwareness!(-1); // DPI_AWARENESS_CONTEXT_UNAWARE
+    }
     _setCursorPos(x, y);
+    if (prev != null && _setThreadDpiAwareness != null) {
+      _setThreadDpiAwareness!(prev); // 원래 context 복원
+    }
   }
 
   void _handleMouseDown(Map<String, dynamic> msg) {

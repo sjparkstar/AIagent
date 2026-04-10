@@ -1,237 +1,442 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 
 class SystemDiagnostics {
-  // 전체 진단 정보 수집 (host-diagnostics용)
   Future<Map<String, dynamic>> collect() async {
     final results = await Future.wait([
       _collectSystem(),
       _collectProcesses(),
+      _collectNetwork(),
     ]);
-
     return {
       'system': results[0],
       'processes': results[1],
-      'network': await _collectNetwork(),
-      'security': _collectSecurity(),
-      'userEnv': _collectUserEnv(),
+      'network': results[2],
+      'security': <String, dynamic>{},
+      'userEnv': {'monitors': <dynamic>[], 'defaultBrowser': '', 'printers': <dynamic>[]},
       'recentEvents': <dynamic>[],
     };
   }
 
-  // 기본 정보만 수집 (host-info용)
   Future<Map<String, dynamic>> collectBasic() async {
-    final memInfo = await _getMemoryInfo();
+    if (Platform.isMacOS) return _collectBasicMacOS();
+
+    final mem = await _runWmic('OS get TotalVisibleMemorySize,FreePhysicalMemory /format:csv');
+    final cpu = await _runWmic('cpu get LoadPercentage /format:csv');
+
+    int totalMB = 0, freeMB = 0, cpuUsage = 0;
+    if (mem.isNotEmpty) {
+      final p = mem.first.split(',');
+      if (p.length >= 3) {
+        freeMB = (int.tryParse(p[1].trim()) ?? 0) ~/ 1024;
+        totalMB = (int.tryParse(p[2].trim()) ?? 0) ~/ 1024;
+      }
+    }
+    if (cpu.isNotEmpty) {
+      final p = cpu.first.split(',');
+      if (p.length >= 2) cpuUsage = int.tryParse(p[1].trim()) ?? 0;
+    }
+
+    final uptime = await _getUptime();
+
     return {
       'hostname': Platform.localHostname,
       'os': Platform.operatingSystem,
       'osVersion': Platform.operatingSystemVersion,
       'cpuCount': Platform.numberOfProcessors,
-      'totalMemoryMB': memInfo['total'],
-      'freeMemoryMB': memInfo['free'],
+      'cpuUsage': cpuUsage,
+      'totalMemoryMB': totalMB,
+      'freeMemoryMB': freeMB,
+      'uptime': uptime,
     };
   }
+
+  // ─── macOS 기본 진단 ────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> _collectBasicMacOS() async {
+    int totalMB = 0, freeMB = 0, cpuUsage = 0;
+
+    try {
+      final r = await Process.run('sysctl', ['-n', 'hw.memsize'])
+          .timeout(const Duration(seconds: 3));
+      final bytes = int.tryParse(r.stdout.toString().trim()) ?? 0;
+      totalMB = bytes ~/ (1024 * 1024);
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('vm_stat', []).timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      int pageSize = 4096;
+      final psMatch = RegExp(r'page size of (\d+) bytes').firstMatch(out);
+      if (psMatch != null) pageSize = int.tryParse(psMatch.group(1)!) ?? 4096;
+
+      int freePages = 0;
+      final freeMatch = RegExp(r'Pages free:\s+(\d+)').firstMatch(out);
+      if (freeMatch != null) freePages = int.tryParse(freeMatch.group(1)!) ?? 0;
+      final inactiveMatch = RegExp(r'Pages inactive:\s+(\d+)').firstMatch(out);
+      if (inactiveMatch != null) freePages += int.tryParse(inactiveMatch.group(1)!) ?? 0;
+      freeMB = (freePages * pageSize) ~/ (1024 * 1024);
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('sh', ['-c', "top -l 1 -n 0 | grep 'CPU usage'"])
+          .timeout(const Duration(seconds: 5));
+      final out = r.stdout.toString();
+      final match = RegExp(r'([\d.]+)%\s+user').firstMatch(out);
+      if (match != null) cpuUsage = double.tryParse(match.group(1)!)?.toInt() ?? 0;
+    } catch (_) {}
+
+    final uptime = await _getUptimeMacOS();
+
+    return {
+      'hostname': Platform.localHostname,
+      'os': Platform.operatingSystem,
+      'osVersion': Platform.operatingSystemVersion,
+      'cpuCount': Platform.numberOfProcessors,
+      'cpuUsage': cpuUsage,
+      'totalMemoryMB': totalMB,
+      'freeMemoryMB': freeMB,
+      'uptime': uptime,
+    };
+  }
+
+  Future<int> _getUptimeMacOS() async {
+    try {
+      final r = await Process.run('sysctl', ['-n', 'kern.boottime'])
+          .timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      final match = RegExp(r'sec\s*=\s*(\d+)').firstMatch(out);
+      if (match != null) {
+        final bootSec = int.tryParse(match.group(1)!) ?? 0;
+        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        return now - bootSec;
+      }
+    } catch (_) {}
+    return 0;
+  }
+
+  // ─── Windows 공통 ──────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> _collectSystem() async {
-    final memInfo = await _getMemoryInfo();
-    final diskInfo = await _getDiskInfo();
-
-    return {
-      'hostname': Platform.localHostname,
-      'os': Platform.operatingSystem,
-      'osVersion': Platform.operatingSystemVersion,
-      'cpuCount': Platform.numberOfProcessors,
-      'totalMemoryMB': memInfo['total'],
-      'freeMemoryMB': memInfo['free'],
-      'disks': diskInfo,
-    };
+    final basic = await collectBasic();
+    final disks = Platform.isMacOS ? await _getDiskInfoMacOS() : await _getDiskInfo();
+    final battery = Platform.isMacOS ? await _getBatteryMacOS() : await _getBattery();
+    return {...basic, 'disks': disks, 'battery': battery};
   }
 
-  Future<Map<String, dynamic>> _getMemoryInfo() async {
+  Future<int> _getUptime() async {
     try {
-      final result = await Process.run(
-        'wmic',
-        ['OS', 'get', 'TotalVisibleMemorySize,FreePhysicalMemory', '/format:csv'],
-        runInShell: true,
-      ).timeout(const Duration(seconds: 5));
-
-      final lines = result.stdout.toString().split('\n')
-          .map((l) => l.trim())
-          .where((l) => l.isNotEmpty && !l.startsWith('Node'))
-          .toList();
-
-      if (lines.isNotEmpty) {
-        final parts = lines.first.split(',');
-        // csv 형식: Node,FreePhysicalMemory,TotalVisibleMemorySize
-        if (parts.length >= 3) {
-          final freeKB = int.tryParse(parts[1].trim()) ?? 0;
-          final totalKB = int.tryParse(parts[2].trim()) ?? 0;
-          return {
-            'total': totalKB ~/ 1024,
-            'free': freeKB ~/ 1024,
-          };
+      final r = await Process.run('net', ['statistics', 'workstation'], runInShell: true)
+          .timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      final match = RegExp(r'(\d{4}/\d{2}/\d{2})\s+(\d+:\d+:\d+)').firstMatch(out) ??
+          RegExp(r'(\d{2}/\d{2}/\d{4})\s+(\d+:\d+:\d+)\s*(AM|PM)?').firstMatch(out);
+      if (match != null) {
+        final bootStr = '${match.group(1)} ${match.group(2)} ${match.group(3) ?? ''}'.trim();
+        for (final fmt in [
+          RegExp(r'(\d{4})/(\d{2})/(\d{2})\s+(\d+):(\d+):(\d+)'),
+          RegExp(r'(\d{2})/(\d{2})/(\d{4})\s+(\d+):(\d+):(\d+)\s*(AM|PM)?'),
+        ]) {
+          final m = fmt.firstMatch(bootStr);
+          if (m != null) {
+            final now = DateTime.now();
+            DateTime boot;
+            if (m.groupCount >= 7) {
+              var h = int.parse(m.group(4)!);
+              if (m.group(7) == 'PM' && h < 12) h += 12;
+              if (m.group(7) == 'AM' && h == 12) h = 0;
+              boot = DateTime(int.parse(m.group(3)!), int.parse(m.group(1)!), int.parse(m.group(2)!), h, int.parse(m.group(5)!), int.parse(m.group(6)!));
+            } else {
+              boot = DateTime(int.parse(m.group(1)!), int.parse(m.group(2)!), int.parse(m.group(3)!), int.parse(m.group(4)!), int.parse(m.group(5)!), int.parse(m.group(6)!));
+            }
+            return now.difference(boot).inSeconds;
+          }
         }
       }
-    } catch (e) {
-      debugPrint('[diag] 메모리 정보 수집 실패: $e');
-    }
-    return {'total': 0, 'free': 0};
+    } catch (_) {}
+    return 0;
+  }
+
+  Future<Map<String, dynamic>?> _getBattery() async {
+    try {
+      final lines = await _runWmic('path Win32_Battery get EstimatedChargeRemaining,BatteryStatus /format:csv');
+      if (lines.isEmpty) return null;
+      final p = lines.first.split(',');
+      if (p.length >= 3) {
+        return {
+          'hasBattery': true,
+          'percent': int.tryParse(p[2].trim()) ?? 0,
+          'charging': p[1].trim() == '2',
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _getBatteryMacOS() async {
+    try {
+      final r = await Process.run('pmset', ['-g', 'batt']).timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      if (!out.contains('InternalBattery')) return null;
+      final percentMatch = RegExp(r'(\d+)%').firstMatch(out);
+      final charging = out.contains('charging') || out.contains('AC attached');
+      return {
+        'hasBattery': true,
+        'percent': int.tryParse(percentMatch?.group(1) ?? '0') ?? 0,
+        'charging': charging,
+      };
+    } catch (_) {}
+    return null;
   }
 
   Future<List<Map<String, dynamic>>> _getDiskInfo() async {
     try {
-      final result = await Process.run(
-        'wmic',
-        [
-          'logicaldisk',
-          'where', 'DriveType=3',
-          'get', 'DeviceID,Size,FreeSpace',
-          '/format:csv',
-        ],
-        runInShell: true,
-      ).timeout(const Duration(seconds: 5));
-
-      final lines = result.stdout.toString().split('\n')
-          .map((l) => l.trim())
-          .where((l) => l.isNotEmpty && !l.startsWith('Node'))
-          .toList();
-
+      final lines = await _runWmic('logicaldisk where "DriveType=3" get DeviceID,Size,FreeSpace /format:csv');
       return lines.map((line) {
-        final parts = line.split(',');
-        // csv 형식: Node,DeviceID,FreeSpace,Size
-        if (parts.length >= 4) {
-          final deviceId = parts[1].trim();
-          final freeBytes = int.tryParse(parts[2].trim()) ?? 0;
-          final totalBytes = int.tryParse(parts[3].trim()) ?? 0;
-          return {
-            'id': deviceId,
-            'totalGB': (totalBytes / 1073741824).toStringAsFixed(1),
-            'freeGB': (freeBytes / 1073741824).toStringAsFixed(1),
-          };
+        final p = line.split(',');
+        if (p.length >= 4) {
+          final free = int.tryParse(p[2].trim()) ?? 0;
+          final total = int.tryParse(p[3].trim()) ?? 0;
+          return {'id': p[1].trim(), 'totalGB': (total / 1073741824).round(), 'freeGB': (free / 1073741824).round()};
         }
         return <String, dynamic>{};
       }).where((d) => d.isNotEmpty).toList();
-    } catch (e) {
-      debugPrint('[diag] 디스크 정보 수집 실패: $e');
-      return [];
-    }
+    } catch (_) { return []; }
   }
 
-  // CPU 사용량 기반 프로세스 Top5 (두 번 샘플링 후 델타 계산)
-  Future<List<Map<String, dynamic>>> _collectProcesses() async {
+  Future<List<Map<String, dynamic>>> _getDiskInfoMacOS() async {
     try {
-      // 프로세스 목록 안정화를 위해 1초 대기 후 샘플링
-      await Future<void>.delayed(const Duration(seconds: 1));
-      final sample2 = await _sampleProcesses();
-
-      // WorkingSetSize 기준 정렬 (CPU 델타 계산은 생략, wmic로는 정확도 낮음)
-      final merged = <String, Map<String, dynamic>>{};
-      for (final p in sample2) {
-        final name = p['name'] as String? ?? '';
-        final pid = p['pid'] as int? ?? 0;
-        final key = '$name-$pid';
-        merged[key] = p;
-      }
-
-      final sorted = merged.values.toList()
-        ..sort((a, b) {
-          final aM = (a['memoryMB'] as num?)?.toDouble() ?? 0;
-          final bM = (b['memoryMB'] as num?)?.toDouble() ?? 0;
-          return bM.compareTo(aM);
+      final r = await Process.run('df', ['-k']).timeout(const Duration(seconds: 3));
+      final lines = r.stdout.toString().split('\n').skip(1);
+      final disks = <Map<String, dynamic>>[];
+      for (final line in lines) {
+        final parts = line.trim().split(RegExp(r'\s+'));
+        if (parts.length < 6) continue;
+        final mountPoint = parts[5];
+        if (!mountPoint.startsWith('/') || mountPoint.contains('/private') || mountPoint.contains('/dev')) continue;
+        final total = (int.tryParse(parts[1]) ?? 0) * 1024;
+        final used = (int.tryParse(parts[2]) ?? 0) * 1024;
+        final free = (int.tryParse(parts[3]) ?? 0) * 1024;
+        if (total == 0) continue;
+        disks.add({
+          'id': mountPoint,
+          'totalGB': (total / 1073741824).round(),
+          'freeGB': (free / 1073741824).round(),
+          'usedGB': (used / 1073741824).round(),
         });
-
-      return sorted.take(5).toList();
-    } catch (e) {
-      debugPrint('[diag] 프로세스 정보 수집 실패: $e');
-      return [];
-    }
+      }
+      return disks;
+    } catch (_) { return []; }
   }
 
-  Future<List<Map<String, dynamic>>> _sampleProcesses() async {
-    final result = await Process.run(
-      'wmic',
-      ['process', 'get', 'Name,ProcessId,WorkingSetSize', '/format:csv'],
-      runInShell: true,
-    ).timeout(const Duration(seconds: 5));
+  Future<List<Map<String, dynamic>>> _collectProcesses() async {
+    if (Platform.isMacOS) return _collectProcessesMacOS();
 
-    final lines = result.stdout.toString().split('\n')
-        .map((l) => l.trim())
-        .where((l) => l.isNotEmpty && !l.startsWith('Node'))
-        .toList();
+    try {
+      final lines1 = await _runWmic('process get Name,ProcessId,KernelModeTime,UserModeTime,WorkingSetSize /format:csv');
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final lines2 = await _runWmic('process get Name,ProcessId,KernelModeTime,UserModeTime,WorkingSetSize /format:csv');
 
-    final processes = <Map<String, dynamic>>[];
-    for (final line in lines) {
-      final parts = line.split(',');
-      // csv 형식: Node,Name,ProcessId,WorkingSetSize
-      if (parts.length >= 4) {
-        final name = parts[1].trim();
-        final pid = int.tryParse(parts[2].trim()) ?? 0;
-        final wss = int.tryParse(parts[3].trim()) ?? 0;
-        if (name.isNotEmpty) {
-          processes.add({
-            'name': name,
-            'pid': pid,
-            'memoryMB': (wss / 1048576).round(),
-          });
+      final map1 = <int, int>{};
+      for (final l in lines1) {
+        final p = l.split(',');
+        if (p.length >= 6) {
+          final pid = int.tryParse(p[3].trim()) ?? 0;
+          final k = int.tryParse(p[2].trim()) ?? 0;
+          final u = int.tryParse(p[4].trim()) ?? 0;
+          map1[pid] = k + u;
         }
       }
+
+      final cpuCount = Platform.numberOfProcessors;
+      final procs = <Map<String, dynamic>>[];
+      for (final l in lines2) {
+        final p = l.split(',');
+        if (p.length >= 6) {
+          final name = p[1].trim();
+          final pid = int.tryParse(p[3].trim()) ?? 0;
+          final k = int.tryParse(p[2].trim()) ?? 0;
+          final u = int.tryParse(p[4].trim()) ?? 0;
+          final wss = int.tryParse(p[5].trim()) ?? 0;
+          final prev = map1[pid];
+          double cpuPct = 0;
+          if (prev != null) {
+            final diff = (k + u) - prev;
+            cpuPct = (diff / (10000000 * cpuCount) * 100);
+            if (cpuPct < 0) cpuPct = 0;
+          }
+          if (name.isNotEmpty && pid > 0) {
+            procs.add({'name': name, 'pid': pid, 'cpu': (cpuPct * 10).round() / 10, 'memoryMB': (wss / 1048576).round()});
+          }
+        }
+      }
+      procs.sort((a, b) => ((b['cpu'] as num)).compareTo(a['cpu'] as num));
+      return procs.take(10).toList();
+    } catch (e) {
+      debugPrint('[diag] 프로세스 수집 실패: $e');
+      return [];
     }
-    return processes;
+  }
+
+  Future<List<Map<String, dynamic>>> _collectProcessesMacOS() async {
+    try {
+      final r = await Process.run('sh', ['-c', 'ps aux -r | head -11'])
+          .timeout(const Duration(seconds: 5));
+      final lines = r.stdout.toString().split('\n').skip(1);
+      final procs = <Map<String, dynamic>>[];
+      for (final line in lines) {
+        final parts = line.trim().split(RegExp(r'\s+'));
+        if (parts.length < 11) continue;
+        final pid = int.tryParse(parts[1]) ?? 0;
+        final cpu = double.tryParse(parts[2]) ?? 0.0;
+        final memMB = (double.tryParse(parts[5]) ?? 0) / 1024;
+        final name = parts.length > 10 ? parts[10].split('/').last : '';
+        if (pid > 0 && name.isNotEmpty) {
+          procs.add({'name': name, 'pid': pid, 'cpu': cpu, 'memoryMB': memMB.round()});
+        }
+      }
+      return procs.take(10).toList();
+    } catch (e) {
+      debugPrint('[diag] macOS 프로세스 수집 실패: $e');
+      return [];
+    }
   }
 
   Future<Map<String, dynamic>> _collectNetwork() async {
+    if (Platform.isMacOS) return _collectNetworkMacOS();
+
     final interfaces = <Map<String, dynamic>>[];
     bool internetAvailable = false;
+    String gateway = '';
+    List<String> dns = [];
+    Map<String, dynamic>? wifi;
 
     try {
-      final networkInterfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        type: InternetAddressType.IPv4,
-      );
-      for (final ni in networkInterfaces) {
-        interfaces.add({
-          'name': ni.name,
-          'addresses': ni.addresses.map((a) => a.address).toList(),
-        });
+      final ni = await NetworkInterface.list(includeLoopback: false, type: InternetAddressType.IPv4);
+      for (final n in ni) {
+        interfaces.add({'name': n.name, 'addresses': n.addresses.map((a) => a.address).toList()});
       }
-    } catch (e) {
-      debugPrint('[diag] 네트워크 인터페이스 수집 실패: $e');
-    }
+    } catch (_) {}
 
     try {
-      final pingResult = await Process.run(
-        'ping',
-        ['-n', '1', '-w', '1000', '8.8.8.8'],
-        runInShell: true,
-      ).timeout(const Duration(seconds: 3));
-      internetAvailable = pingResult.exitCode == 0;
-    } catch (_) {
-      internetAvailable = false;
-    }
+      final r = await Process.run('chcp', ['65001', '>nul', '2>&1', '&', 'ipconfig', '/all'], runInShell: true)
+          .timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      final gwMatch = RegExp(r'Default Gateway[\s.]*:\s*([\d.]+)').firstMatch(out) ??
+          RegExp(r'기본 게이트웨이[\s.]*:\s*([\d.]+)').firstMatch(out);
+      if (gwMatch != null) gateway = gwMatch.group(1)!;
+      final dnsMatches = RegExp(r'DNS Servers[\s.]*:\s*([\d.]+)').allMatches(out).toList();
+      if (dnsMatches.isEmpty) {
+        dns = RegExp(r'DNS 서버[\s.]*:\s*([\d.]+)').allMatches(out).map((m) => m.group(1)!).toList();
+      } else {
+        dns = dnsMatches.map((m) => m.group(1)!).toList();
+      }
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('ping', ['-n', '1', '-w', '1000', '8.8.8.8'], runInShell: true)
+          .timeout(const Duration(seconds: 3));
+      internetAvailable = r.stdout.toString().contains('TTL=') || r.stdout.toString().contains('ttl=');
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('netsh', ['wlan', 'show', 'interfaces'], runInShell: true)
+          .timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      final ssid = RegExp(r'SSID\s*:\s*(.+)').firstMatch(out);
+      final signal = RegExp(r'(?:Signal|신호)\s*:\s*(\d+)%').firstMatch(out);
+      if (ssid != null) {
+        wifi = {'ssid': ssid.group(1)!.trim(), 'signal': signal != null ? int.parse(signal.group(1)!) : 0};
+      }
+    } catch (_) {}
 
     return {
       'interfaces': interfaces,
+      'gateway': gateway,
+      'dns': dns,
       'internetAvailable': internetAvailable,
+      'wifi': wifi,
     };
   }
 
-  Map<String, dynamic> _collectSecurity() {
+  Future<Map<String, dynamic>> _collectNetworkMacOS() async {
+    final interfaces = <Map<String, dynamic>>[];
+    bool internetAvailable = false;
+    String gateway = '';
+    List<String> dns = [];
+    Map<String, dynamic>? wifi;
+
+    try {
+      final ni = await NetworkInterface.list(includeLoopback: false, type: InternetAddressType.IPv4);
+      for (final n in ni) {
+        interfaces.add({'name': n.name, 'addresses': n.addresses.map((a) => a.address).toList()});
+      }
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('sh', ['-c', "route -n get default 2>/dev/null | grep gateway"])
+          .timeout(const Duration(seconds: 3));
+      final match = RegExp(r'gateway:\s*([\d.]+)').firstMatch(r.stdout.toString());
+      if (match != null) gateway = match.group(1)!;
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('sh', ['-c', "cat /etc/resolv.conf | grep nameserver"])
+          .timeout(const Duration(seconds: 3));
+      dns = RegExp(r'nameserver\s+([\d.]+)').allMatches(r.stdout.toString()).map((m) => m.group(1)!).toList();
+    } catch (_) {}
+
+    try {
+      final r = await Process.run('ping', ['-c', '1', '-W', '1000', '8.8.8.8'])
+          .timeout(const Duration(seconds: 3));
+      internetAvailable = r.stdout.toString().contains('ttl=') || r.stdout.toString().contains('TTL=');
+    } catch (_) {}
+
+    try {
+      const airportPath = '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport';
+      final r = await Process.run(airportPath, ['-I']).timeout(const Duration(seconds: 3));
+      final out = r.stdout.toString();
+      final ssidMatch = RegExp(r'\bSSID:\s*(.+)').firstMatch(out);
+      final agrnMatch = RegExp(r'agrCtlRSSI:\s*(-?\d+)').firstMatch(out);
+      if (ssidMatch != null) {
+        final rssi = int.tryParse(agrnMatch?.group(1) ?? '-100') ?? -100;
+        final signal = ((rssi + 100) * 2).clamp(0, 100);
+        wifi = {'ssid': ssidMatch.group(1)!.trim(), 'signal': signal};
+      }
+    } catch (_) {}
+
     return {
-      'firewallEnabled': false,
-      'defenderEnabled': false,
-      'uacEnabled': false,
-      'antivirusProducts': <dynamic>[],
+      'interfaces': interfaces,
+      'gateway': gateway,
+      'dns': dns,
+      'internetAvailable': internetAvailable,
+      'wifi': wifi,
     };
   }
 
-  Map<String, dynamic> _collectUserEnv() {
-    return {
-      'username': Platform.environment['USERNAME'] ?? '',
-      'userDomain': Platform.environment['USERDOMAIN'] ?? '',
-      'computerName': Platform.environment['COMPUTERNAME'] ?? '',
-      'systemDrive': Platform.environment['SystemDrive'] ?? 'C:',
-    };
+  Future<List<String>> _runWmic(String args) async {
+    try {
+      final parts = args.split(' ');
+      // chcp 65001로 UTF-8 출력 강제 후 wmic 실행
+      final r = await Process.run(
+        'cmd', ['/c', 'chcp 65001 >nul 2>&1 & wmic ${parts.join(' ')}'],
+        runInShell: true,
+        stdoutEncoding: null,
+        stderrEncoding: null,
+      ).timeout(const Duration(seconds: 5));
+
+      String out;
+      if (r.stdout is List<int>) {
+        out = utf8.decode(r.stdout as List<int>, allowMalformed: true);
+      } else {
+        out = r.stdout.toString();
+      }
+
+      return out.split('\n')
+          .map((l) => l.replaceAll('\r', '').trim())
+          .where((l) => l.isNotEmpty && !l.startsWith('Node'))
+          .toList();
+    } catch (_) { return []; }
   }
 }
