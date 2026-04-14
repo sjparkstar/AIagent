@@ -1,14 +1,15 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import type { SignalingMessage } from "@remote-desktop/shared";
-import { isSignalingMessage, ERROR_CODES } from "@remote-desktop/shared";
+import { isSignalingMessage, isChatMessage, isDiagnosisMessage, ERROR_CODES } from "@remote-desktop/shared";
+import { handleChatWebSocket } from "./chat-ws.js";
+import { handleDiagnosisWebSocket } from "./diagnosis-ws.js";
 import { log } from "./logger.js";
 import {
+  // rate limit은 미승인 접속 시도 카운트에 재활용
   checkRateLimit,
   recordFailedAttempt,
   clearAttempts,
-  verifyPassword,
-  hashPassword,
 } from "./auth.js";
 import {
   createRoom,
@@ -36,28 +37,33 @@ function getClientIp(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
-async function handleRegister(
+// register한 쪽 = 원격지원을 받는 뷰어 앱 (방을 생성하고 접속번호를 발급받는다)
+function handleRegister(
   ws: WebSocket,
   msg: Extract<SignalingMessage, { type: "register" }>
-): Promise<void> {
+): void {
   if (msg.roomId && getRoom(msg.roomId)) {
     sendError(ws, ERROR_CODES.ROOM_ALREADY_EXISTS, "Room already exists");
     return;
   }
 
-  const passwordHash = await hashPassword(msg.passwordHash);
+  // 비밀번호 방식 폐지 — passwordHash 자리는 빈 문자열로 유지 (스키마 최소 변경)
   const host = { ws, roomId: "", connectedAt: Date.now() };
-  const room = createRoom(host, passwordHash, msg.roomId);
+  const room = createRoom(host, "", msg.roomId);
 
   log(`Room created: ${room.roomId}`);
   send(ws, { type: "host-ready", roomId: room.roomId });
 }
 
-async function handleJoin(
+// join한 쪽 = 원격지원을 제공하는 호스트 앱 (접속번호를 입력해서 방에 참가한다)
+// 새 흐름: 즉시 입장이 아니라 pending 상태로 등록 후 뷰어 앱의 승인을 기다린다
+function handleJoin(
   ws: WebSocket,
   msg: Extract<SignalingMessage, { type: "join" }>,
   ip: string
-): Promise<void> {
+): void {
+  // 과거에는 비밀번호 실패 횟수를 rate limit에 썼다.
+  // 지금은 미승인 접속 시도 횟수 제한으로 용도를 바꿔서 그대로 유지한다.
   const { allowed, errorCode } = checkRateLimit(ip);
   if (!allowed) {
     sendError(
@@ -70,29 +76,17 @@ async function handleJoin(
 
   const room = getRoom(msg.roomId);
   if (!room) {
+    recordFailedAttempt(ip); // 없는 방 접속 시도도 카운트
     sendError(ws, ERROR_CODES.ROOM_NOT_FOUND, "Room not found");
     return;
   }
 
-  const valid = await verifyPassword(msg.password, room.passwordHash);
-  if (!valid) {
-    recordFailedAttempt(ip);
-    sendError(ws, ERROR_CODES.INVALID_PASSWORD, "Invalid password");
-    return;
-  }
-
-  clearAttempts(ip);
+  // pending 상태로 viewer 등록 (approved=false 기본값)
   const viewer = addViewer(room, ws);
+  log(`Host app joined room ${room.roomId} as viewer ${viewer.viewerId} — awaiting approval`);
 
-  log(`Viewer ${viewer.viewerId} joined room ${room.roomId}`);
-
-  send(room.host.ws, { type: "viewer-joined", viewerId: viewer.viewerId });
-  send(ws, {
-    type: "room-info",
-    roomId: room.roomId,
-    viewerCount: room.viewers.size,
-    viewerId: viewer.viewerId,
-  });
+  // 뷰어 앱(= register한 쪽 = room.host.ws)에게 승인 요청 알림 발송
+  send(room.host.ws, { type: "host-join-request", viewerId: viewer.viewerId });
 }
 
 function handleOffer(
@@ -173,10 +167,13 @@ function handleIceCandidate(
   }
 }
 
-function handleApproveViewer(
+// approve-host: 뷰어 앱이 호스트의 접속 요청을 승인/거부한다
+// ws = 뷰어 앱의 WebSocket (register한 쪽 = room.host)
+function handleApproveHost(
   ws: WebSocket,
-  msg: Extract<SignalingMessage, { type: "approve-viewer" }>
+  msg: Extract<SignalingMessage, { type: "approve-host" }>
 ): void {
+  // 뷰어 앱은 서버 내부에서 room.host로 관리된다
   const room = getRoomByHost(ws);
   if (!room) return;
 
@@ -186,13 +183,31 @@ function handleApproveViewer(
     return;
   }
 
-  viewer.approved = msg.approved;
-
   if (!msg.approved) {
-    sendError(viewer.ws, ERROR_CODES.UNAUTHORIZED, "Connection not approved");
+    // 거부: 호스트 앱에 에러 전송 후 연결 제거
+    recordFailedAttempt(viewer.ws.url ?? "unknown"); // rate limit 카운트
+    sendError(viewer.ws, ERROR_CODES.UNAUTHORIZED, "접속이 거부되었습니다");
     viewer.ws.close();
     removeViewer(room, msg.viewerId);
+    log(`Host app ${msg.viewerId} rejected by viewer in room ${room.roomId}`);
+    return;
   }
+
+  // 승인: 이제 정식 입장 처리
+  viewer.approved = true;
+  clearAttempts(viewer.ws.url ?? "unknown");
+  log(`Host app ${msg.viewerId} approved in room ${room.roomId}`);
+
+  // 호스트 앱(join한 쪽)에게 room-info 전송 — 연결 성공 신호
+  send(viewer.ws, {
+    type: "room-info",
+    roomId: room.roomId,
+    viewerCount: room.viewers.size,
+    viewerId: msg.viewerId,
+  });
+
+  // 뷰어 앱(register한 쪽)에게 viewer-joined 전송 — WebRTC 시작 신호
+  send(room.host.ws, { type: "viewer-joined", viewerId: msg.viewerId });
 }
 
 function handleDisconnect(ws: WebSocket): void {
@@ -221,11 +236,35 @@ function handleDisconnect(ws: WebSocket): void {
 }
 
 export function attachWebSocketHandlers(wss: WebSocketServer): void {
+  // 15초마다 모든 클라이언트에 ping 전송 — 연결 유지 및 죽은 연결 감지
+  const PING_INTERVAL_MS = 15_000;
+  const aliveMap = new WeakMap<WebSocket, boolean>();
+
+  const pingTimer = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (aliveMap.get(ws) === false) {
+        // 이전 ping에 pong 응답이 없으면 연결 종료
+        ws.terminate();
+        continue;
+      }
+      aliveMap.set(ws, false);
+      ws.ping();
+    }
+  }, PING_INTERVAL_MS);
+
+  wss.on("close", () => clearInterval(pingTimer));
+
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const ip = getClientIp(req);
     log(`Client connected: ${ip}`);
 
+    aliveMap.set(ws, true);
+    ws.on("pong", () => aliveMap.set(ws, true));
+
     ws.on("message", (data) => {
+      // 수신된 메시지도 살아있음의 증거
+      aliveMap.set(ws, true);
+
       let msg: unknown;
       try {
         msg = JSON.parse(data.toString());
@@ -234,17 +273,34 @@ export function attachWebSocketHandlers(wss: WebSocketServer): void {
         return;
       }
 
+      // 채팅 메시지 먼저 확인 — 시그널링과 별도 처리
+      if (isChatMessage(msg)) {
+        handleChatWebSocket(ws, msg);
+        return;
+      }
+
+      // 자동진단/복구 메시지 처리
+      if (isDiagnosisMessage(msg)) {
+        void handleDiagnosisWebSocket(ws, msg);
+        return;
+      }
+
       if (!isSignalingMessage(msg)) {
+        // "ping" 타입 메시지는 응용 레벨 하트비트로 허용 (무시)
+        const rawType = (msg as Record<string, unknown>)?.type;
+        if (rawType === "ping") return;
         sendError(ws, ERROR_CODES.INVALID_MESSAGE, "Unknown message type");
         return;
       }
 
       switch (msg.type) {
         case "register":
-          void handleRegister(ws, msg);
+          // register = 뷰어 앱이 방을 만들 때 보내는 메시지
+          handleRegister(ws, msg);
           break;
         case "join":
-          void handleJoin(ws, msg, ip);
+          // join = 호스트 앱이 접속번호를 입력해 방에 참가할 때
+          handleJoin(ws, msg, ip);
           break;
         case "offer":
           handleOffer(ws, msg);
@@ -255,8 +311,9 @@ export function attachWebSocketHandlers(wss: WebSocketServer): void {
         case "ice-candidate":
           handleIceCandidate(ws, msg);
           break;
-        case "approve-viewer":
-          handleApproveViewer(ws, msg);
+        case "approve-host":
+          // approve-host = 뷰어 앱이 호스트의 접속 요청을 승인/거부
+          handleApproveHost(ws, msg);
           break;
         default:
           break;

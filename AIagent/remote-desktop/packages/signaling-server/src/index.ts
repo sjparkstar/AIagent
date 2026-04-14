@@ -5,6 +5,11 @@ import { DEFAULT_PORT } from "@remote-desktop/shared";
 import { log } from "./logger.js";
 import { attachWebSocketHandlers } from "./server.js";
 import { handleAssistantChat } from "./assistant-api.js";
+import { handleDownloadPage } from "./download-page.js";
+import { handleRecordingRoutes } from "./recording-api.js";
+import { handleSummarizeSession } from "./summarize-api.js";
+import { handleChatRoutes } from "./chat-api.js";
+import { handleDiagnosisRoutes } from "./diagnosis-api.js";
 
 const PORT = parseInt(process.env["PORT"] ?? String(DEFAULT_PORT), 10);
 
@@ -14,6 +19,14 @@ const httpServer = http.createServer((req, res) => {
     res.end(
       JSON.stringify({ status: "ok", timestamp: new Date().toISOString() })
     );
+    return;
+  }
+  if (handleDownloadPage(req, res)) return;
+  if (handleRecordingRoutes(req, res)) return;
+  if (handleChatRoutes(req, res)) return;
+  if (handleDiagnosisRoutes(req, res)) return;
+  if (req.url === "/api/summarize-session" || (req.method === "OPTIONS" && req.url === "/api/summarize-session")) {
+    handleSummarizeSession(req, res).catch(() => { res.writeHead(500); res.end(); });
     return;
   }
   if (req.url === "/api/assistant-chat") {
@@ -33,6 +46,7 @@ attachWebSocketHandlers(wss);
 httpServer.listen(PORT, "0.0.0.0", () => {
   log(`Signaling server listening on port ${PORT}`);
   log(`Health check: http://localhost:${PORT}/health`);
+  log(`Download page: http://localhost:${PORT}/download`);
 });
 
 process.on("SIGTERM", () => {

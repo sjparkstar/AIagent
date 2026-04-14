@@ -46,6 +46,9 @@ class PeerManager {
     final answer = await _pc!.createAnswer();
     await _pc!.setLocalDescription(answer);
 
+    // 비디오 비트레이트 2.5Mbps로 제한 — 대역폭 절약 + 지연 감소
+    await _applyBitrateLimit();
+
     onAnswerReady?.call(answer, viewerId);
   }
 
@@ -196,6 +199,26 @@ class PeerManager {
       debugPrint('[peer] 소스 전환 완료: ${source.name} bounds=$bounds');
     } catch (e) {
       debugPrint('[peer] 소스 전환 실패: $e');
+    }
+  }
+
+  // 비디오 비트레이트를 2.5Mbps로 제한
+  Future<void> _applyBitrateLimit() async {
+    if (_pc == null) return;
+    try {
+      final senders = await _pc!.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind == 'video') {
+          final params = sender.parameters;
+          if (params.encodings != null && params.encodings!.isNotEmpty) {
+            params.encodings!.first.maxBitrate = 2500000;
+            await sender.setParameters(params);
+            debugPrint('[peer] 비트레이트 제한 설정: 2.5Mbps');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[peer] 비트레이트 설정 실패: $e');
     }
   }
 

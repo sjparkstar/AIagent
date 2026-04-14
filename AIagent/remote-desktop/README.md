@@ -56,7 +56,7 @@ remote-desktop/
 - 대화 로그 DB 기록
 
 ### 호스트 시스템 진단
-- 5초 단위 실시간 시스템 정보 수집 (OS/CPU/메모리/디스크/배터리/네트워크)
+- 3초 단위 실시간 시스템 정보 수집 (OS/CPU/메모리/디스크/배터리/네트워크)
 - OS별 수집 (Windows: wmic/ipconfig/netsh, macOS: pmset/airport, Linux: df/iwgetid)
 - 프로세스 CPU Top 5 (두 번 샘플링 방식)
 - 자동 진단 엔진 (CPU 과부하, 메모리 부족, 디스크 부족, 인터넷 불가, DNS 오류 등)

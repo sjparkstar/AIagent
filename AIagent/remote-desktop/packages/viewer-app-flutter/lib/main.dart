@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 import 'app_theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/waiting_screen.dart';
@@ -6,6 +7,8 @@ import 'services/supabase_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 윈도우 매니저 초기화 (전체화면 제어용)
+  await windowManager.ensureInitialized();
   await SupabaseService.initialize();
   runApp(const ViewerApp());
 }

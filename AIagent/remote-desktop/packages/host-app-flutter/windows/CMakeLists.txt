@@ -106,3 +106,10 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# ffmpeg.exe를 빌드 결과물에 복사 (화면 녹화용)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg/ffmpeg.exe")
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg/ffmpeg.exe"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()

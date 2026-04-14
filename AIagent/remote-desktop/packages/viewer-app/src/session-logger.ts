@@ -91,6 +91,15 @@ export function getSessionId(): string | null {
   return sessionId;
 }
 
+export async function updateRecordingUrl(url: string): Promise<void> {
+  if (!sessionId) return;
+  const supabase = getSupabase();
+  await supabase
+    .from("connection_sessions")
+    .update({ recording_url: url })
+    .eq("id", sessionId);
+}
+
 export async function logAssistantMessage(
   role: "user" | "assistant" | "system",
   content: string,

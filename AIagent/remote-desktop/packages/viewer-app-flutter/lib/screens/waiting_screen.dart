@@ -19,6 +19,8 @@ class _WaitingScreenState extends State<WaitingScreen> {
   String _statusMessage = '서버에 연결 중...';
   bool _connecting = true;
   bool _hostJoined = false;
+  // 승인 다이얼로그 중복 표시 방지
+  bool _approvalDialogOpen = false;
 
   @override
   void initState() {
@@ -73,9 +75,14 @@ class _WaitingScreenState extends State<WaitingScreen> {
       }
     };
 
+    // 호스트 앱이 접속 요청을 보내면 승인 다이얼로그 표시
+    _signaling.onHostJoinRequest = (viewerId) {
+      _showApprovalDialog(viewerId);
+    };
+
     try {
       await _signaling.connect(widget.serverUrl);
-      _signaling.register('nopass');
+      _signaling.register();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -103,6 +110,41 @@ class _WaitingScreenState extends State<WaitingScreen> {
   void _cancel() {
     _signaling.disconnect();
     Navigator.of(context).pop();
+  }
+
+  // 호스트 접속 요청 승인 다이얼로그
+  Future<void> _showApprovalDialog(String viewerId) async {
+    if (!mounted || _approvalDialogOpen) return;
+    _approvalDialogOpen = true;
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: bgCard,
+        title: const Text('호스트 접속 요청',
+            style: TextStyle(color: textPrimary, fontSize: 15)),
+        content: const Text(
+          '원격지원 호스트가 접속을 요청했습니다.\n승인하시겠습니까?',
+          style: TextStyle(color: textSecondary, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('거부', style: TextStyle(color: danger)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('승인', style: TextStyle(color: accent)),
+          ),
+        ],
+      ),
+    );
+    _approvalDialogOpen = false;
+    final approved = result ?? false;
+    _signaling.sendApproveHost(viewerId, approved);
+    if (!approved && mounted) {
+      setState(() => _statusMessage = '호스트 접속을 거부했습니다. 다시 대기 중...');
+    }
   }
 
   @override
@@ -162,6 +204,12 @@ class _WaitingScreenState extends State<WaitingScreen> {
                       const Text(
                         '호스트에게 이 번호를 알려주세요.',
                         style: TextStyle(color: textSecondary, fontSize: 12),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '호스트가 접속을 시도하면 승인 여부를 묻습니다.',
+                        style: TextStyle(color: textSecondary, fontSize: 11),
+                        textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 20),
                     ],

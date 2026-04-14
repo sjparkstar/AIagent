@@ -174,6 +174,61 @@ export async function loadSessionDetail(sessionId: string): Promise<string> {
       </div>
     </div>`;
 
+  // 녹화/PDF 섹션
+  if (s.recording_url || s.pdf_url) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-section-title">녹화 / 요약</div>
+        <div class="detail-grid">`;
+
+    if (s.recording_url) {
+      const fullUrl = `${window.location.protocol}//${window.location.hostname}:8080${s.recording_url}`;
+      html += `
+          <div class="detail-row">
+            <span class="detail-label">녹화 파일</span>
+            <span class="detail-value">
+              <a href="${fullUrl}" target="_blank" style="color:var(--accent);text-decoration:none;">다운로드</a>
+              <button class="btn-play-recording" data-url="${fullUrl}" style="margin-left:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 10px;font-size:11px;cursor:pointer;">재생</button>
+            </span>
+          </div>`;
+    }
+
+    if (s.pdf_url) {
+      const pdfFullUrl = `${window.location.protocol}//${window.location.hostname}:8080${s.pdf_url}`;
+      html += `
+          <div class="detail-row">
+            <span class="detail-label">요약 PDF</span>
+            <span class="detail-value"><a href="${pdfFullUrl}" target="_blank" style="color:var(--accent);text-decoration:none;">PDF 다운로드</a></span>
+          </div>`;
+    }
+
+    if (s.recording_url && !s.pdf_url) {
+      html += `
+          <div class="detail-row">
+            <span class="detail-label">요약 생성</span>
+            <span class="detail-value">
+              <button class="btn-summarize" data-session-id="${s.id}" style="background:linear-gradient(135deg,#4f8ef7,#6366f1);color:#fff;border:none;border-radius:6px;padding:4px 14px;font-size:11px;cursor:pointer;">녹화파일 요약</button>
+            </span>
+          </div>`;
+    }
+
+    html += `
+        </div>
+      </div>`;
+  } else {
+    // 녹화가 없어도 녹화파일 요약 버튼은 표시하지 않음 (녹화 없으면 섹션 숨김)
+  }
+
+  // 녹화 재생 영역 (비디오 플레이어)
+  if (s.recording_url) {
+    const fullUrl = `${window.location.protocol}//${window.location.hostname}:8080${s.recording_url}`;
+    html += `
+      <div class="detail-section recording-player-section" style="display:none;">
+        <div class="detail-section-title">녹화 재생</div>
+        <video class="recording-player" controls style="width:100%;max-height:300px;border-radius:8px;background:#000;" src="${fullUrl}"></video>
+      </div>`;
+  }
+
   const logs = logsRes.data ?? [];
 
   // 매크로/플레이북 실행 기록 필터링

@@ -3,7 +3,6 @@ import { PeerManager } from "./peer-manager";
 import type { ScreenSource } from "../main/capture";
 import { DEFAULT_PORT } from "@remote-desktop/shared";
 
-const DUMMY_PASS = "nopass";
 const RECONNECT_TIMEOUT_MS = 30_000;
 
 const signaling = new SignalingClient();
@@ -211,7 +210,8 @@ async function attemptConnect(): Promise<void> {
     return;
   }
 
-  signaling.send({ type: "join", roomId, password: DUMMY_PASS });
+  // password 방식 폐지 — roomId만으로 접속 요청 (뷰어가 승인)
+  signaling.send({ type: "join", roomId });
 }
 
 connectBtn.addEventListener("click", () => {
@@ -242,7 +242,7 @@ signaling.onMessage((msg) => {
     case "error":
       setConnectBtnState(false);
       setStatus("대기 중");
-      showErrorPopup("접속번호를 확인하신 후 입력해주세요.");
+      showErrorPopup("접속번호를 확인하거나, 뷰어가 접속을 거부했습니다.");
       break;
   }
 });

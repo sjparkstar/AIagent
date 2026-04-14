@@ -4,15 +4,15 @@ import 'package:flutter/foundation.dart';
 
 class SystemDiagnostics {
   Future<Map<String, dynamic>> collect() async {
+    // 프로세스 수집 제거 — wmic 2회 호출 + 1초 딜레이가 성능 병목
     final results = await Future.wait([
       _collectSystem(),
-      _collectProcesses(),
       _collectNetwork(),
     ]);
     return {
       'system': results[0],
-      'processes': results[1],
-      'network': results[2],
+      'processes': <dynamic>[],
+      'network': results[1],
       'security': <String, dynamic>{},
       'userEnv': {'monitors': <dynamic>[], 'defaultBrowser': '', 'printers': <dynamic>[]},
       'recentEvents': <dynamic>[],

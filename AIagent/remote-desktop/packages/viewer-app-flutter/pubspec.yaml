@@ -16,6 +16,10 @@ dependencies:
   web_socket_channel: ^3.0.3
   supabase_flutter: ^2.8.4
   http: ^1.2.2
+  shared_preferences: ^2.3.4
+  window_manager: 0.4.0
+  url_launcher: ^6.3.1
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:

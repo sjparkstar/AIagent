@@ -38,3 +38,15 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# 빌드 후 ffmpeg.exe를 실행 파일과 같은 디렉토리에 복사
+# (debug/release 모두에서 번들된 ffmpeg를 사용할 수 있도록)
+set(FFMPEG_SOURCE "${CMAKE_SOURCE_DIR}/ffmpeg/ffmpeg.exe")
+if(EXISTS ${FFMPEG_SOURCE})
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${FFMPEG_SOURCE}"
+      "$<TARGET_FILE_DIR:${BINARY_NAME}>/ffmpeg.exe"
+    COMMENT "Copying ffmpeg.exe to output directory"
+  )
+endif()

@@ -47,9 +47,16 @@ class ViewerPeerConnection {
     };
 
     _pc!.onTrack = (RTCTrackEvent event) {
+      debugPrint('[peer] onTrack 이벤트: streams=${event.streams.length}');
       if (event.streams.isNotEmpty) {
         onTrack?.call(event.streams.first);
       }
+    };
+
+    // Windows 데스크톱에서는 onTrack 대신 onAddStream이 호출될 수 있음
+    _pc!.onAddStream = (MediaStream stream) {
+      debugPrint('[peer] onAddStream 이벤트: id=${stream.id}');
+      onTrack?.call(stream);
     };
 
     _pc!.onIceCandidate = (RTCIceCandidate candidate) {
@@ -68,10 +75,14 @@ class ViewerPeerConnection {
     _viewerId = viewerId;
     if (_pc == null) await initialize();
 
-    final offer = await _pc!.createOffer({
-      'offerToReceiveVideo': true,
-      'offerToReceiveAudio': false,
-    });
+    // 웹 뷰어와 동일하게 recvonly 트랜시버를 명시적으로 추가
+    // (offerToReceiveVideo 제약 대신 트랜시버 기반으로 SDP 협상)
+    await _pc!.addTransceiver(
+      kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+      init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+    );
+
+    final offer = await _pc!.createOffer();
     await _pc!.setLocalDescription(offer);
     onOfferReady?.call(offer);
   }

@@ -9,3 +9,10 @@ release/
 Thumbs.db
 .claude/settings.local.json
 .playwright-mcp/
+
+# 런타임 데이터 (사용자 생성 파일)
+remote-desktop/packages/signaling-server/pdfs/
+remote-desktop/packages/signaling-server/recordings/
+
+# 대용량 바이너리
+remote-desktop/packages/host-app-flutter/windows/ffmpeg/

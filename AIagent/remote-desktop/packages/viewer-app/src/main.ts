@@ -8,7 +8,7 @@ import { UI } from "./ui.js";
 import type { HostSystemInfo, SystemDiagnostics } from "@remote-desktop/shared";
 import { searchDocuments, askAssistant } from "./assistant-search.js";
 import { openAsWidget, isWidgetOpen } from "./assistant-widget.js";
-import { startSession, updateHostInfo, recordStats, endSession, logAssistantMessage } from "./session-logger.js";
+import { startSession, updateHostInfo, recordStats, endSession, updateRecordingUrl, getSessionId, logAssistantMessage } from "./session-logger.js";
 import { loadDashboardStats, renderDashboard, loadSessionDetail } from "./dashboard-stats.js";
 import { runDiagnosis, resetDiagnosis } from "./auto-diagnosis.js";
 import type { DiagnosisResult } from "./auto-diagnosis.js";
@@ -17,9 +17,13 @@ import type { Macro } from "./macro-manager.js";
 import { fetchPlaybooks, createPlaybook, updatePlaybook, deletePlaybook } from "./playbook-manager.js";
 import type { Playbook } from "./playbook-manager.js";
 import { initMacroTab, resolveMacroResult, setTabSwitcher, sendMacroCommand, executePlaybook } from "./macro-tab.js";
+import { startRecording, stopRecording, getIsRecording } from "./recording-manager.js";
+import { ChatClient } from "./chat-client.js";
+import type { ChatMessageData } from "./chat-client.js";
+import { IssueService } from "./issue-service.js";
+import type { IssueEvent, IssuePlaybook } from "./issue-service.js";
 
 const SIGNALING_URL = `ws://${window.location.hostname}:8080`;
-const DUMMY_PASS = "nopass";
 const RECONNECT_TIMEOUT_MS = 30_000;
 const RECONNECT_INTERVAL_MS = 3_000;
 const isSessionMode = new URLSearchParams(window.location.search).has("mode");
@@ -35,6 +39,20 @@ let isReconnecting = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDeadline = 0;
 let lastSourceId = "";
+let currentStream: MediaStream | null = null;
+
+// 채팅 클라이언트 — 뷰어 ID는 localStorage에 영구 저장 (세션 간 동일 ID 유지)
+const VIEWER_ID_KEY = "viewerId";
+function getOrCreateViewerId(): string {
+  let id = localStorage.getItem(VIEWER_ID_KEY);
+  if (!id) {
+    id = "viewer-" + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem(VIEWER_ID_KEY, id);
+  }
+  return id;
+}
+const SERVER_HTTP_URL = `http://${window.location.hostname}:8080`;
+const chatClient = new ChatClient(SERVER_HTTP_URL, getOrCreateViewerId(), "viewer");
 
 function cleanupPeer(): void {
   inputCapture.detach();
@@ -44,7 +62,25 @@ function cleanupPeer(): void {
   peer = null;
 }
 
+function updateRecordingButton(): void {
+  const btn = document.getElementById("recording-btn");
+  if (!btn) return;
+  const recording = getIsRecording();
+  btn.textContent = recording ? "⏹" : "⏺";
+  btn.title = recording ? "녹화 중단" : "녹화 시작";
+  btn.classList.toggle("recording-active", recording);
+}
+
+function notifyHostRecordingState(recording: boolean): void {
+  peer?.sendMessage({ type: "recording-state", recording });
+}
+
 function teardown(reason = "manual"): void {
+  // 녹화 종료 및 업로드 (비차단)
+  stopRecording()
+    .then((url) => { if (url) updateRecordingUrl(url).catch(() => {}); })
+    .catch(() => {});
+
   endSession(reason).catch(() => {});
   resetDiagnosis();
   stopReconnect();
@@ -53,6 +89,17 @@ function teardown(reason = "manual"): void {
   signaling = null;
   currentRoomId = "";
   isReconnecting = false;
+  currentStream = null;
+  updateRecordingButton();
+  // 채팅 WebSocket 종료 (채팅방 이력은 서버에 유지)
+  chatClient.disconnect();
+  // 스레드 패널이 열려 있으면 닫기
+  closeThreadPanel();
+  // 위젯 메시지 영역 초기화
+  chatWidgetMessages.innerHTML = "";
+  chatWidgetTyping.textContent = "";
+  chatWidgetBadge.textContent = "0";
+  chatWidgetBadge.classList.add("hidden");
 }
 
 function showEndOrHome(): void {
@@ -84,6 +131,17 @@ function setupPeer(viewerId: string): void {
     display!.startStats(peer!, (text) => ui.updateStats(text));
     ui.hideReconnectOverlay();
     isReconnecting = false;
+
+    // 녹화: 자동 시작 설정이 켜져있으면 자동 시작
+    currentStream = stream;
+    if (localStorage.getItem("autoRecord") !== "false") {
+      const sid = getSessionId();
+      if (sid) {
+        startRecording(stream, sid);
+        updateRecordingButton();
+        notifyHostRecordingState(true);
+      }
+    }
 
     // WebRTC 통계를 5초마다 세션 로거에 기록
     const statsLogger = setInterval(async () => {
@@ -235,6 +293,12 @@ async function createRoom(): Promise<void> {
     ui.showWaitingScreen(roomId);
   });
 
+  // 호스트 앱이 접속 요청을 보내면 승인 다이얼로그를 띄운다
+  signaling.on("host-join-request", (viewerId) => {
+    const approved = confirm("호스트 앱에서 접속 요청이 왔습니다.\n\n원격 지원을 허용하시겠습니까?");
+    signaling?.sendApproveHost(viewerId, approved);
+  });
+
   signaling.on("viewer-joined", (viewerId) => {
     if (isReconnecting) {
       stopReconnect();
@@ -245,9 +309,36 @@ async function createRoom(): Promise<void> {
     }
     setupPeer(viewerId);
     startSession(currentRoomId, viewerId).catch(() => {});
+    // 채팅 WebSocket 연결 + 채팅방 생성 (연결 성공 시)
+    chatClient.connect();
+    chatClient.createOrJoinRoom(currentRoomId, [chatClient.userId, "host"])
+      .then((room) => {
+        chatClient.setChatRoom(room.id);
+        // 입장 직후 기존 메시지 로드
+        renderChatMessages(room.id, true);
+      })
+      .catch(() => {});
+    // 자동진단 이슈 서비스 초기화
+    initIssueService(viewerId);
   });
 
-  signaling.register(DUMMY_PASS);
+  // 시그널링 WS의 커스텀 메시지 (진단/복구 브로드캐스트) 라우팅
+  signaling.onCustomMessage = (msg) => {
+    const type = msg["type"];
+    if (type === "issue.notified") {
+      issueService?.handleNotified(msg);
+    } else if (type === "diagnostic.result") {
+      renderDiagnosticResult(msg);
+    } else if (type === "recovery.result") {
+      renderRecoveryResult(msg);
+    } else if (type === "verification.result") {
+      const success = msg["success"] === true;
+      console.log(`[verification] ${success ? "통과" : "실패"}`);
+    }
+  };
+
+  // password 방식 폐지 — register 시 인자 없이 방만 생성
+  signaling.register();
 }
 
 // ── 호스트 시스템 정보 UI 업데이트 ───────────────────────
@@ -657,16 +748,529 @@ const tabPlaceholder = document.createElement("div");
 tabPlaceholder.className = "tab-placeholder";
 tabPlaceholder.style.cssText = "flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:13px;";
 
+// 설정 탭 컨테이너
+const settingsContainer = document.createElement("div");
+settingsContainer.className = "settings-tab-container";
+settingsContainer.style.cssText = "flex:1;overflow-y:auto;padding:16px;";
+settingsContainer.innerHTML = `
+  <div style="font-size:14px;font-weight:600;margin-bottom:16px;color:var(--text-primary);">환경설정</div>
+  <div class="settings-group">
+    <div class="settings-item">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary);">녹화 자동 시작</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">상담 연결 시 화면 녹화를 자동으로 시작합니다.</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="setting-auto-record" ${localStorage.getItem("autoRecord") !== "false" ? "checked" : ""} />
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+`;
+
+settingsContainer.querySelector("#setting-auto-record")?.addEventListener("change", (e) => {
+  const checked = (e.target as HTMLInputElement).checked;
+  localStorage.setItem("autoRecord", String(checked));
+});
+
 // 매크로 탭 컨테이너 (세션 모드에서 재사용)
 const macroTabContainer = document.createElement("div");
 macroTabContainer.className = "macro-tab-container";
 macroTabContainer.style.cssText = "flex:1;overflow-y:auto;";
+
+// ── 채팅 탭 UI ──────────────────────────────────────────────────────────────
+
+// 채팅 전체 컨테이너 DOM 생성 (오른쪽 패널 탭용)
+const chatContainer = document.createElement("div");
+chatContainer.className = "chat-container";
+chatContainer.innerHTML = `
+  <div class="chat-messages" id="chat-messages"></div>
+  <div class="chat-typing-indicator" id="chat-typing-indicator"></div>
+  <div class="chat-input-bar">
+    <input type="text" class="chat-text-input" id="chat-input" placeholder="메시지를 입력하세요..." />
+    <button class="btn chat-send-btn" id="chat-send-btn" title="전송">&#8594;</button>
+  </div>
+`;
+
+// ── 스레드 패널 상태 ──────────────────────────────────────────────────────────
+
+// 현재 열린 스레드의 부모 메시지 (null이면 일반 채팅 뷰)
+let activeThreadMsg: ChatMessageData | null = null;
+// 스레드 패널에 로드된 답글 목록 (실시간 추가에 활용)
+let activeThreadReplies: ChatMessageData[] = [];
+
+// 왼쪽 채팅 위젯 DOM 레퍼런스
+const chatWidgetEl = document.getElementById("chat-widget")!;
+const chatWidgetMessages = document.getElementById("chat-widget-messages")!;
+const chatWidgetInput = document.getElementById("chat-widget-input") as HTMLInputElement;
+const chatWidgetSendBtn = document.getElementById("chat-widget-send-btn")!;
+const chatWidgetBadge = document.getElementById("chat-widget-badge")!;
+const chatWidgetCollapseBtn = document.getElementById("chat-widget-collapse-btn")!;
+const chatWidgetTyping = document.getElementById("chat-widget-typing")!;
+
+// 채팅 위젯 접기/펼기 상태
+let chatWidgetCollapsed = false;
+
+// 접기/펼기 버튼 클릭
+chatWidgetCollapseBtn.addEventListener("click", () => {
+  chatWidgetCollapsed = !chatWidgetCollapsed;
+  chatWidgetEl.classList.toggle("collapsed", chatWidgetCollapsed);
+  chatWidgetCollapseBtn.textContent = chatWidgetCollapsed ? "▸" : "◂";
+  if (!chatWidgetCollapsed) {
+    // 펼칠 때 배지 초기화 + 읽음 처리 + 스크롤 하단
+    chatWidgetBadge.textContent = "0";
+    chatWidgetBadge.classList.add("hidden");
+    chatClient.sendRead();
+    chatWidgetMessages.scrollTop = chatWidgetMessages.scrollHeight;
+  }
+});
+
+// 위젯 전송 버튼 / Enter 이벤트
+chatWidgetSendBtn.addEventListener("click", () => sendChatMessageFromWidget());
+chatWidgetInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessageFromWidget();
+  } else {
+    chatClient.sendTyping();
+  }
+});
+
+// 위젯 전송 함수 — 스레드 패널이 열려 있으면 답글로 전송
+function sendChatMessageFromWidget(): void {
+  const content = chatWidgetInput.value.trim();
+  if (!content) return;
+  if (!chatClient.getChatRoomId()) return;
+  // 스레드 패널이 열려 있는 경우 해당 패널의 입력창에서 전송해야 하므로
+  // 위젯 입력창은 스레드 닫힌 상태에서만 동작
+  chatClient.sendMessage(content);
+  chatWidgetInput.value = "";
+}
+
+// 타이핑 타이머 (일정 시간 후 자동 숨김)
+let typingHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+// 단일 버블 DOM을 만들어 반환하는 헬퍼 (탭/위젯 양쪽 재사용)
+// isThreadView=true이면 스레드 패널 안에서 렌더링 — 답글 배지/버튼 표시 안 함
+function buildChatBubble(msg: ChatMessageData, isThreadView = false): HTMLElement {
+  const isSelf = msg.senderId === chatClient.userId;
+  const isSystem = msg.senderType === "system" || msg.messageType === "system";
+
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble ${isSystem ? "system" : isSelf ? "self" : "other"}`;
+  bubble.dataset["msgId"] = msg.id;
+
+  if (!isSelf && !isSystem) {
+    const nameEl = document.createElement("div");
+    nameEl.className = "chat-sender-name";
+    nameEl.textContent = msg.senderType === "host" ? "호스트" : msg.senderId;
+    bubble.appendChild(nameEl);
+  }
+
+  const contentEl = document.createElement("div");
+  contentEl.className = "chat-content";
+  contentEl.textContent = msg.content;
+  bubble.appendChild(contentEl);
+
+  if (!isSystem) {
+    const metaEl = document.createElement("div");
+    metaEl.className = "chat-meta";
+    const timeEl = document.createElement("span");
+    timeEl.className = "chat-time";
+    try {
+      timeEl.textContent = new Date(msg.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      timeEl.textContent = "";
+    }
+    metaEl.appendChild(timeEl);
+    bubble.appendChild(metaEl);
+
+    // 스레드 패널 안(답글 뷰)에서는 배지/버튼 추가 안 함 (1단계 깊이 정책)
+    if (!isThreadView) {
+      // 답글이 1개 이상이면 "답글 N개" 배지 표시
+      if (msg.replyCount > 0) {
+        const badge = document.createElement("button");
+        badge.className = "thread-badge";
+        badge.dataset["parentId"] = msg.id;
+        badge.textContent = `💬 답글 ${msg.replyCount}개`;
+        badge.addEventListener("click", () => openThreadPanel(msg));
+        bubble.appendChild(badge);
+      }
+
+      // 호버 시 나타나는 "답글 달기" 버튼 (답글 0개여도 스레드 시작 가능)
+      const replyBtn = document.createElement("button");
+      replyBtn.className = "reply-btn";
+      replyBtn.textContent = "↩ 답글";
+      replyBtn.addEventListener("click", () => openThreadPanel(msg));
+      bubble.appendChild(replyBtn);
+    }
+  }
+  return bubble;
+}
+
+// 채팅 메시지 1개를 DOM에 추가 (탭 영역 + 위젯 영역 동시 렌더링)
+// 답글(parentMessageId가 있는 경우)은 메인 채팅에 추가하지 않고 스레드 처리만 함
+function appendChatBubble(msg: ChatMessageData): void {
+  // 답글이면 메인 채팅에 추가하지 않고 스레드 처리
+  if (msg.parentMessageId) {
+    // 부모 메시지의 replyCount 배지를 갱신 (위젯과 탭 양쪽)
+    incrementReplyBadge(msg.parentMessageId);
+    // 스레드 패널이 열려 있고 같은 부모 메시지이면 패널에 추가
+    if (activeThreadMsg?.id === msg.parentMessageId) {
+      appendReplyToThreadPanel(msg);
+    }
+    return;
+  }
+
+  // 일반 메시지: 탭용 메시지 영역에 추가
+  const messagesEl = document.getElementById("chat-messages");
+  if (messagesEl) {
+    messagesEl.appendChild(buildChatBubble(msg));
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // 위젯 메시지 영역에도 추가 (스레드 패널 모드가 아닐 때만 스크롤)
+  const widgetBody = document.querySelector<HTMLElement>(".chat-widget-body");
+  // 스레드 패널이 위젯을 점유 중이면 추가는 하되 스크롤은 스킵
+  if (widgetBody && !activeThreadMsg) {
+    chatWidgetMessages.appendChild(buildChatBubble(msg));
+    chatWidgetMessages.scrollTop = chatWidgetMessages.scrollHeight;
+  } else if (!activeThreadMsg) {
+    chatWidgetMessages.appendChild(buildChatBubble(msg));
+    chatWidgetMessages.scrollTop = chatWidgetMessages.scrollHeight;
+  }
+  // 스레드 패널이 열려 있는 경우에도 위젯 메시지에는 추가해 두지만
+  // 패널이 닫힌 후 보여야 하므로 hidden parent에 미리 넣어둠
+  if (activeThreadMsg) {
+    chatWidgetMessages.appendChild(buildChatBubble(msg));
+  }
+}
+
+// 부모 메시지의 답글 배지 카운트를 +1 업데이트 (위젯 + 탭 양쪽)
+function incrementReplyBadge(parentId: string): void {
+  // 위젯과 탭 양쪽에서 해당 부모 메시지 버블을 찾아 배지 갱신
+  const selectors = [
+    `#chat-widget-messages .chat-bubble[data-msg-id="${CSS.escape(parentId)}"]`,
+    `#chat-messages .chat-bubble[data-msg-id="${CSS.escape(parentId)}"]`,
+  ];
+  for (const selector of selectors) {
+    const bubble = document.querySelector<HTMLElement>(selector);
+    if (!bubble) continue;
+
+    let badge = bubble.querySelector<HTMLButtonElement>(".thread-badge");
+    if (badge) {
+      // 기존 배지에서 숫자 파싱 후 +1
+      const m = badge.textContent?.match(/\d+/);
+      const newCount = m ? parseInt(m[0], 10) + 1 : 1;
+      badge.textContent = `💬 답글 ${newCount}개`;
+    } else {
+      // 배지가 없으면 새로 생성 (replyCount가 0이었던 메시지에 첫 답글이 달린 경우)
+      badge = document.createElement("button");
+      badge.className = "thread-badge";
+      badge.dataset["parentId"] = parentId;
+      badge.textContent = "💬 답글 1개";
+      // 클릭하면 스레드 패널 열기 — 부모 메시지 데이터를 버블에서 복원
+      badge.addEventListener("click", () => {
+        // 현재 로컬 chatWidgetMessages에서 부모 메시지 데이터를 찾을 수 없으므로
+        // replyCount를 1로 임시 세팅한 객체로 패널을 열고 서버에서 답글 로드
+        const parentMsg: ChatMessageData = {
+          id: parentId,
+          chatRoomId: chatClient.getChatRoomId() ?? "",
+          senderId: bubble.querySelector<HTMLElement>(".chat-sender-name")?.textContent ?? "",
+          senderType: "viewer",
+          content: bubble.querySelector<HTMLElement>(".chat-content")?.textContent ?? "",
+          messageType: "text",
+          createdAt: new Date().toISOString(),
+          parentMessageId: null,
+          replyCount: 1,
+        };
+        openThreadPanel(parentMsg);
+      });
+      // 답글 달기 버튼 앞에 삽입 (또는 metaEl 다음)
+      const replyBtn = bubble.querySelector(".reply-btn");
+      if (replyBtn) bubble.insertBefore(badge, replyBtn);
+      else bubble.appendChild(badge);
+    }
+  }
+}
+
+// ── 스레드 패널 오픈/클로즈 ─────────────────────────────────────────────────
+
+// 스레드 패널 열기: 위젯 바디를 스레드 뷰로 교체
+function openThreadPanel(parentMsg: ChatMessageData): void {
+  activeThreadMsg = parentMsg;
+  activeThreadReplies = [];
+
+  // 위젯 바디를 스레드 패널로 교체
+  const widgetBody = document.querySelector<HTMLElement>(".chat-widget-body");
+  const widgetInputBar = document.querySelector<HTMLElement>(".chat-widget-input-bar");
+  if (!widgetBody) return;
+
+  // 기존 바디 숨기기
+  widgetBody.style.display = "none";
+  if (widgetInputBar) widgetInputBar.style.display = "none";
+
+  // 스레드 패널 DOM 생성
+  const panel = document.createElement("div");
+  panel.id = "thread-panel";
+  panel.className = "thread-panel";
+
+  // 발신 시간 포맷
+  let timeStr = "";
+  try { timeStr = new Date(parentMsg.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }); } catch { /* 무시 */ }
+
+  panel.innerHTML = `
+    <div class="thread-panel-header">
+      <button class="thread-back-btn" title="채팅으로 돌아가기">← 채팅</button>
+      <span class="thread-panel-title">스레드</span>
+    </div>
+    <div class="thread-panel-body" id="thread-panel-body">
+      <div class="thread-origin">
+        <div class="thread-origin-label">${parentMsg.senderType === "host" ? "호스트" : "뷰어"} · ${timeStr}</div>
+        <div class="thread-origin-content">${escapeHtml(parentMsg.content)}</div>
+      </div>
+      <div class="thread-divider">
+        <div class="thread-divider-line"></div>
+        <span class="thread-divider-label" id="thread-reply-count">답글 불러오는 중...</span>
+        <div class="thread-divider-line"></div>
+      </div>
+    </div>
+    <div class="thread-input-bar">
+      <input type="text" class="chat-text-input" id="thread-input" placeholder="답글 입력..." autocomplete="off" />
+      <button class="chat-send-btn thread-send-btn" id="thread-send-btn" title="전송">&#8594;</button>
+    </div>
+  `;
+
+  // 뒤로 가기 버튼
+  panel.querySelector(".thread-back-btn")!.addEventListener("click", closeThreadPanel);
+
+  // 답글 전송 버튼 / Enter
+  const threadInput = panel.querySelector<HTMLInputElement>("#thread-input")!;
+  panel.querySelector("#thread-send-btn")!.addEventListener("click", () => sendThreadReply(threadInput));
+  threadInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendThreadReply(threadInput);
+    }
+  });
+
+  // 위젯 헤더 다음에 패널 삽입
+  const chatWidgetEl = document.getElementById("chat-widget");
+  chatWidgetEl?.appendChild(panel);
+
+  // 서버에서 답글 로드
+  loadThreadReplies(parentMsg.id);
+}
+
+// 스레드 패널 닫기: 위젯 바디 복원
+function closeThreadPanel(): void {
+  activeThreadMsg = null;
+  activeThreadReplies = [];
+
+  const panel = document.getElementById("thread-panel");
+  panel?.remove();
+
+  const widgetBody = document.querySelector<HTMLElement>(".chat-widget-body");
+  const widgetInputBar = document.querySelector<HTMLElement>(".chat-widget-input-bar");
+  if (widgetBody) widgetBody.style.display = "";
+  if (widgetInputBar) widgetInputBar.style.display = "";
+}
+
+// 서버에서 답글 목록 로드 후 패널에 렌더링
+async function loadThreadReplies(parentId: string): Promise<void> {
+  const replies = await chatClient.loadReplies(parentId);
+  activeThreadReplies = replies;
+
+  const countEl = document.getElementById("thread-reply-count");
+  if (countEl) countEl.textContent = replies.length > 0 ? `답글 ${replies.length}개` : "아직 답글이 없습니다";
+
+  const body = document.getElementById("thread-panel-body");
+  if (!body) return;
+
+  replies.forEach((r) => {
+    body.appendChild(buildChatBubble(r, true)); // 스레드 뷰이므로 배지 없음
+  });
+
+  body.scrollTop = body.scrollHeight;
+}
+
+// 스레드 패널에 실시간으로 도착한 답글 추가
+function appendReplyToThreadPanel(msg: ChatMessageData): void {
+  activeThreadReplies.push(msg);
+
+  const countEl = document.getElementById("thread-reply-count");
+  if (countEl) countEl.textContent = `답글 ${activeThreadReplies.length}개`;
+
+  const body = document.getElementById("thread-panel-body");
+  if (!body) return;
+
+  body.appendChild(buildChatBubble(msg, true));
+  body.scrollTop = body.scrollHeight;
+}
+
+// 스레드 답글 전송
+function sendThreadReply(input: HTMLInputElement): void {
+  const content = input.value.trim();
+  if (!content || !activeThreadMsg) return;
+  chatClient.sendMessage(content, activeThreadMsg.id);
+  input.value = "";
+}
+
+// HTML 이스케이프 유틸 (XSS 방지)
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// 채팅방 입장 직후 기존 메시지 로드
+async function renderChatMessages(chatRoomId: string, initialLoad: boolean): Promise<void> {
+  const messagesEl = document.getElementById("chat-messages");
+
+  // 서버는 스레드 루트(parent_message_id IS NULL)만 반환
+  const messages = await chatClient.loadMessages(chatRoomId);
+
+  if (initialLoad) {
+    // 탭 영역 초기화
+    if (messagesEl) {
+      messagesEl.innerHTML = "";
+      if (messages.length >= 30) {
+        const loadMoreBtn = document.createElement("button");
+        loadMoreBtn.className = "chat-load-more";
+        loadMoreBtn.textContent = "이전 메시지 불러오기";
+        loadMoreBtn.addEventListener("click", () => {
+          const firstMsg = messagesEl.querySelector<HTMLElement>(".chat-bubble[data-msg-id]");
+          const firstCreatedAt = firstMsg ? (firstMsg.querySelector(".chat-time") as HTMLElement | null)?.title : undefined;
+          void loadOlderMessages(firstCreatedAt);
+        });
+        messagesEl.prepend(loadMoreBtn);
+      }
+    }
+    // 위젯 영역 초기화
+    chatWidgetMessages.innerHTML = "";
+  }
+
+  messages.forEach((msg) => appendChatBubble(msg));
+
+  // 최초 로드 후 읽음 처리
+  if (initialLoad) chatClient.sendRead();
+}
+
+// 위로 스크롤 시 과거 메시지 로드 (루트 메시지만 — 서버가 보장)
+async function loadOlderMessages(before?: string): Promise<void> {
+  const roomId = chatClient.getChatRoomId();
+  if (!roomId) return;
+  const messagesEl = document.getElementById("chat-messages");
+  if (!messagesEl) return;
+
+  const prevScrollHeight = messagesEl.scrollHeight;
+  const older = await chatClient.loadMessages(roomId, before);
+
+  // 기존 버튼 제거 후 buildChatBubble로 일관된 렌더링
+  messagesEl.querySelector(".chat-load-more")?.remove();
+  const fragment = document.createDocumentFragment();
+  older.forEach((msg) => fragment.appendChild(buildChatBubble(msg)));
+  messagesEl.prepend(fragment);
+  // 스크롤 위치 유지
+  messagesEl.scrollTop = messagesEl.scrollHeight - prevScrollHeight;
+}
+
+// 채팅 메시지 수신 콜백 등록
+chatClient.onMessage = (msg: ChatMessageData) => {
+  // appendChatBubble 내부에서 답글/루트 분기 처리
+  appendChatBubble(msg);
+
+  const isFromOther = msg.senderId !== chatClient.userId;
+
+  if (isFromOther) {
+    // 답글 수신은 배지/읽음에 합산 (별도 카운트 없이 단순화)
+    // 위젯이 접혀있으면 위젯 배지 증가
+    if (chatWidgetCollapsed) {
+      const count = parseInt(chatWidgetBadge.textContent ?? "0", 10) + 1;
+      chatWidgetBadge.textContent = String(count);
+      chatWidgetBadge.classList.remove("hidden");
+    } else {
+      // 위젯이 열려있으면 읽음 처리
+      chatClient.sendRead();
+    }
+
+    // 오른쪽 패널 채팅 탭이 아닌 경우 탭 배지도 증가
+    if (currentTab !== "chat") {
+      const tabBadge = document.getElementById("chat-unread-badge");
+      if (tabBadge) {
+        const count = parseInt(tabBadge.textContent ?? "0", 10) + 1;
+        tabBadge.textContent = String(count);
+        tabBadge.classList.remove("hidden");
+      }
+    }
+  }
+};
+
+// 타이핑 수신 콜백 등록
+chatClient.onTyping = (_chatRoomId: string, userId: string) => {
+  if (userId === chatClient.userId) return;
+  const typingText = "상대방이 입력 중...";
+
+  // 탭 영역 인디케이터
+  const indicator = document.getElementById("chat-typing-indicator");
+  if (indicator) indicator.textContent = typingText;
+
+  // 위젯 인디케이터
+  chatWidgetTyping.textContent = typingText;
+
+  if (typingHideTimer) clearTimeout(typingHideTimer);
+  typingHideTimer = setTimeout(() => {
+    if (indicator) indicator.textContent = "";
+    chatWidgetTyping.textContent = "";
+  }, 3000);
+};
+
+// 채팅 전송 버튼 / Enter 이벤트
+chatContainer.querySelector<HTMLButtonElement>("#chat-send-btn")?.addEventListener("click", () => {
+  sendChatMessage();
+});
+chatContainer.querySelector<HTMLInputElement>("#chat-input")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessage();
+  } else {
+    // 타이핑 중 알림 (100ms debounce는 생략, 키 입력마다 전송)
+    chatClient.sendTyping();
+  }
+});
+
+function sendChatMessage(): void {
+  const input = chatContainer.querySelector<HTMLInputElement>("#chat-input");
+  const content = input?.value.trim() ?? "";
+  if (!content) return;
+  if (!chatClient.getChatRoomId()) {
+    appendChatBubble({
+      id: "err-" + Date.now(),
+      chatRoomId: "",
+      senderId: chatClient.userId,
+      senderType: "system",
+      content: "채팅방에 연결되어 있지 않습니다.",
+      messageType: "system",
+      createdAt: new Date().toISOString(),
+      parentMessageId: null,
+      replyCount: 0,
+    });
+    return;
+  }
+  chatClient.sendMessage(content);
+  if (input) input.value = "";
+}
+
 let currentTab = "ai";
 
 function switchTab(tab: string): void {
   currentTab = tab;
   macroTabContainer.remove();
   tabPlaceholder.remove();
+  settingsContainer.remove();
+  chatContainer.remove();
 
   if (tab === "ai") {
     aiContentEls.forEach((el) => { el.style.display = ""; });
@@ -675,6 +1279,26 @@ function switchTab(tab: string): void {
     const navBar = document.querySelector(".assistant-nav-bar");
     if (navBar) navBar.parentElement!.insertBefore(macroTabContainer, navBar);
     initMacroTab(macroTabContainer, ui, () => peer);
+  } else if (tab === "settings") {
+    aiContentEls.forEach((el) => { el.style.display = "none"; });
+    settingsContainer.remove();
+    const navBar = document.querySelector(".assistant-nav-bar");
+    if (navBar) navBar.parentElement!.insertBefore(settingsContainer, navBar);
+  } else if (tab === "chat") {
+    aiContentEls.forEach((el) => { el.style.display = "none"; });
+    const navBar = document.querySelector(".assistant-nav-bar");
+    if (navBar) navBar.parentElement!.insertBefore(chatContainer, navBar);
+    // 탭 열 때 안읽음 배지 초기화 + 읽음 처리
+    const badge = document.getElementById("chat-unread-badge");
+    if (badge) { badge.textContent = "0"; badge.classList.add("hidden"); }
+    chatClient.sendRead();
+    // 채팅방이 연결된 경우 스크롤 하단으로
+    const messagesEl = document.getElementById("chat-messages");
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    else if (chatClient.getChatRoomId()) {
+      // 탭 첫 진입 시 메시지 로드
+      renderChatMessages(chatClient.getChatRoomId()!, false).catch(() => {});
+    }
   } else {
     aiContentEls.forEach((el) => { el.style.display = "none"; });
     tabPlaceholder.textContent = `[${tab}] 추후 구현 예정입니다.`;
@@ -696,6 +1320,34 @@ document.querySelectorAll<HTMLButtonElement>(".assistant-nav-item").forEach((btn
     btn.classList.add("active");
     switchTab(btn.dataset["tab"] ?? "ai");
   });
+});
+
+// ── 대시보드 환경설정 모달 ─────────────────────────────────
+
+const settingsModal = document.getElementById("settings-modal");
+const dashboardAutoRecord = document.getElementById("dashboard-auto-record") as HTMLInputElement | null;
+
+if (dashboardAutoRecord) {
+  dashboardAutoRecord.checked = localStorage.getItem("autoRecord") !== "false";
+  dashboardAutoRecord.addEventListener("change", () => {
+    localStorage.setItem("autoRecord", String(dashboardAutoRecord.checked));
+    // AI Assistant 설정 탭의 토글과 동기화
+    const aiToggle = document.getElementById("setting-auto-record") as HTMLInputElement | null;
+    if (aiToggle) aiToggle.checked = dashboardAutoRecord.checked;
+  });
+}
+
+document.getElementById("dashboard-settings-btn")?.addEventListener("click", () => {
+  if (settingsModal) {
+    if (dashboardAutoRecord) dashboardAutoRecord.checked = localStorage.getItem("autoRecord") !== "false";
+    settingsModal.classList.remove("hidden");
+  }
+});
+document.getElementById("settings-modal-close")?.addEventListener("click", () => {
+  settingsModal?.classList.add("hidden");
+});
+settingsModal?.addEventListener("click", (e) => {
+  if (e.target === settingsModal) settingsModal.classList.add("hidden");
 });
 
 // ── 대시보드 통계 로딩 ──────────────────────────────────
@@ -722,6 +1374,7 @@ if (!isSessionMode) {
 
       loadSessionDetail(sid).then((html) => {
         modalBody.innerHTML = html;
+        attachRecordingHandlers(modalBody, sid);
       }).catch(() => {
         modalBody.innerHTML = `<p class="session-empty">상세 정보를 불러올 수 없습니다.</p>`;
       });
@@ -908,12 +1561,29 @@ ui.cancelBtn.addEventListener("click", () => {
 });
 
 ui.disconnectBtn.addEventListener("click", () => {
+  if (!confirm("상담 연결을 종료하시겠습니까?")) return;
   teardown();
   showEndOrHome();
 });
 
 ui.fullscreenBtn.addEventListener("click", () => {
   display?.toggleFullscreen();
+});
+
+// 녹화 시작/중단 버튼
+document.getElementById("recording-btn")?.addEventListener("click", async () => {
+  if (getIsRecording()) {
+    const url = await stopRecording();
+    if (url) updateRecordingUrl(url).catch(() => {});
+    notifyHostRecordingState(false);
+    updateRecordingButton();
+  } else {
+    const sid = getSessionId();
+    if (!sid || !currentStream) return;
+    startRecording(currentStream, sid);
+    notifyHostRecordingState(true);
+    updateRecordingButton();
+  }
 });
 
 // 상담 종료 화면 — 확인 버튼
@@ -944,6 +1614,256 @@ document.querySelectorAll<HTMLElement>(".diag-section-header").forEach((header) 
     header.textContent = header.textContent?.replace(isHidden ? "▸" : "▾", isHidden ? "▾" : "▸") ?? header.textContent;
   });
 });
+
+// ── 녹화/PDF 이벤트 핸들러 ──────────────────────────────
+
+function attachRecordingHandlers(container: HTMLElement, sessionId: string): void {
+  // 재생 버튼
+  container.querySelectorAll<HTMLButtonElement>(".btn-play-recording").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const section = container.querySelector(".recording-player-section") as HTMLElement | null;
+      if (section) {
+        const isVisible = section.style.display !== "none";
+        section.style.display = isVisible ? "none" : "block";
+        btn.textContent = isVisible ? "재생" : "닫기";
+      }
+    });
+  });
+
+  // 요약 버튼
+  container.querySelectorAll<HTMLButtonElement>(".btn-summarize").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "요약 생성 중...";
+
+      try {
+        const baseUrl = `${window.location.protocol}//${window.location.hostname}:8080`;
+        const res = await fetch(`${baseUrl}/api/summarize-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { pdfUrl: string };
+
+        btn.textContent = "완료!";
+        const pdfLink = document.createElement("a");
+        pdfLink.href = `${baseUrl}${data.pdfUrl}`;
+        pdfLink.target = "_blank";
+        pdfLink.style.cssText = "color:var(--accent);text-decoration:none;margin-left:8px;";
+        pdfLink.textContent = "PDF 다운로드";
+        btn.parentElement?.appendChild(pdfLink);
+      } catch (e) {
+        btn.textContent = "요약 실패";
+        btn.disabled = false;
+        console.error("[summarize]", e);
+      }
+    });
+  });
+}
+
+// ── 자동진단/복구 이슈 UI (PLAN.md 승인형 플로우) ────────────────
+let issueService: IssueService | null = null;
+let currentViewerId = "";
+
+function initIssueService(viewerId: string): void {
+  currentViewerId = viewerId;
+  const serverUrl = `http://${window.location.hostname}:8080`;
+  issueService = new IssueService(serverUrl);
+  issueService.onIssuesChanged = renderIssueAlerts;
+}
+
+function renderIssueAlerts(): void {
+  const container = document.getElementById("issue-alerts");
+  if (!container || !issueService) return;
+  const issues = issueService.getActiveIssues();
+  if (issues.length === 0) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+  container.classList.remove("hidden");
+  container.innerHTML = issues.map(renderIssueCard).join("");
+  // 버튼 이벤트 연결
+  container.querySelectorAll<HTMLButtonElement>("[data-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => onApproveDiagnostic(btn.dataset["approve"] ?? ""));
+  });
+  container.querySelectorAll<HTMLButtonElement>("[data-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      issueService?.dismissIssue(btn.dataset["dismiss"] ?? "");
+    });
+  });
+}
+
+function renderIssueCard(issue: IssueEvent): string {
+  const icon = issue.severity === "critical" ? "🔴" : issue.severity === "warning" ? "🟡" : "🔵";
+  const statusLabel = ({
+    "detected": "승인 필요",
+    "acknowledged": "진단 중",
+    "diagnosed": "복구 대기",
+    "recovered": "복구 완료",
+  } as Record<string, string>)[issue.status] ?? issue.status;
+  const actionable = issue.status === "detected";
+  return `
+    <div class="issue-card ${issue.severity}">
+      <div class="issue-card-title">
+        <span>${icon}</span>
+        <span>[${issue.category}] ${issue.summary}</span>
+        <span class="issue-card-status">${statusLabel}</span>
+      </div>
+      ${issue.detail ? `<div class="issue-card-detail">${issue.detail}</div>` : ""}
+      ${actionable ? `
+        <div class="issue-card-actions">
+          <button class="issue-card-btn primary" data-approve="${issue.id}">상세 진단 승인</button>
+          <button class="issue-card-btn secondary" data-dismiss="${issue.id}">무시</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+async function onApproveDiagnostic(issueId: string): Promise<void> {
+  if (!issueService || !signaling) return;
+  const issue = issueService.getActiveIssues().find((i) => i.id === issueId);
+  if (!issue) return;
+
+  const result = await issueService.approveDiagnostic({
+    issueId,
+    approverId: currentViewerId,
+    scopeLevel: 1,
+    sessionId: getSessionId() ?? undefined,
+  });
+  if (!result) {
+    alert("진단 승인 실패");
+    return;
+  }
+
+  // 보안 강화: 서버가 카테고리별 고정 스텝으로 호스트 디스패치 — 뷰어는 approve만 보냄
+  signaling.sendRaw({
+    type: "approve.diagnostic",
+    issueId,
+    scopeLevel: 1,
+    approverId: currentViewerId,
+    approvalToken: result.tokenId,
+  });
+}
+
+// 주의: 진단 스텝은 서버(diagnosis-ws.ts)에서 카테고리별 고정 정의.
+// 뷰어가 임의 command를 주입하지 못하도록 뷰어 측 함수는 제거됨.
+
+function renderDiagnosticResult(msg: Record<string, unknown>): void {
+  const issueId = String(msg["issueId"] ?? "");
+  const candidates = (msg["rootCauseCandidates"] as unknown[]) ?? [];
+  let text = "🔍 진단 결과:\n";
+  for (const c of candidates.slice(0, 3)) {
+    const m = c as Record<string, unknown>;
+    const confidencePct = Math.round(((m["confidence"] as number) ?? 0) * 100);
+    text += `• ${m["cause"]} (신뢰도 ${confidencePct}%)\n`;
+  }
+  // AI 채팅에 시스템 메시지로 표시
+  ui.addAssistantMessage("assistant", text.trim());
+
+  // 권장 플레이북 로드 → AI 채팅에 권장 복구 카드 추가
+  const issue = issueService?.getActiveIssues().find((i) => i.id === issueId);
+  if (!issue) return;
+  void issueService?.loadPlaybooks(issue.category).then((playbooks) => {
+    if (playbooks.length === 0) return;
+    const html = renderRecoveryCard(issue, playbooks);
+    appendHtmlToChat(html);
+    bindRecoveryButtons(issue);
+  });
+}
+
+function renderRecoveryCard(_issue: IssueEvent, playbooks: IssuePlaybook[]): string {
+  const rows = playbooks.slice(0, 5).map((p) => {
+    const riskClass = p.risk_level ?? "medium";
+    const riskLabel = ({ low: "낮음", medium: "중간", high: "높음", critical: "매우 높음" } as Record<string, string>)[p.risk_level] ?? p.risk_level;
+    return `
+      <div class="recovery-playbook-row">
+        <div style="flex:1">
+          <div class="recovery-playbook-name">${p.name}</div>
+          <div class="recovery-playbook-badges">
+            <span class="recovery-badge ${riskClass}">위험도 ${riskLabel}</span>
+            <span class="recovery-badge level">Level ${p.required_approval_level}</span>
+          </div>
+        </div>
+        <button class="issue-card-btn primary" data-recovery="${p.id}" style="flex:0 0 auto;width:auto;padding:5px 10px;">실행</button>
+      </div>
+    `;
+  }).join("");
+  return `<div class="recovery-card"><div class="recovery-card-title">🛠 권장 복구</div>${rows}</div>`;
+}
+
+function appendHtmlToChat(html: string): void {
+  const container = document.getElementById("assistant-messages");
+  if (!container) return;
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function bindRecoveryButtons(issue: IssueEvent): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-recovery]").forEach((btn) => {
+    if (btn.dataset["bound"] === "1") return;
+    btn.dataset["bound"] = "1";
+    btn.addEventListener("click", () => {
+      const pbId = btn.dataset["recovery"] ?? "";
+      void onApproveRecovery(issue, pbId);
+    });
+  });
+}
+
+async function onApproveRecovery(issue: IssueEvent, pbId: string): Promise<void> {
+  if (!issueService || !signaling) return;
+  const playbooks = await issueService.loadPlaybooks(issue.category);
+  const pb = playbooks.find((p) => p.id === pbId);
+  if (!pb) return;
+
+  // Level 3 이상은 재확인
+  if (pb.required_approval_level >= 3) {
+    const ok = confirm(
+      `⚠️ ${pb.name}\n\n위험도: ${pb.risk_level}\n승인 Level ${pb.required_approval_level} 필요\n\n이 복구는 시스템에 영향을 줄 수 있습니다. 실행하시겠습니까?`,
+    );
+    if (!ok) return;
+  }
+
+  const result = await issueService.approveRecovery({
+    issueId: issue.id,
+    approverId: currentViewerId,
+    scopeLevel: pb.required_approval_level,
+    allowedActionIds: [pb.id],
+    sessionId: getSessionId() ?? undefined,
+  });
+  if (!result) {
+    alert("복구 승인 실패");
+    return;
+  }
+
+  // 보안 강화: 뷰어는 playbookId만 전달 — 서버가 DB에서 조회 후 호스트에 명령 전송
+  signaling.sendRaw({
+    type: "approve.recovery",
+    issueId: issue.id,
+    playbookId: pb.id,
+    scopeLevel: pb.required_approval_level,
+    approverId: currentViewerId,
+    approvalToken: result.tokenId,
+  });
+  ui.addAssistantMessage("assistant", `⏳ 복구 실행 중: ${pb.name}`);
+}
+
+function renderRecoveryResult(msg: Record<string, unknown>): void {
+  const success = msg["success"] === true;
+  const rolled = msg["rolledBack"] === true;
+  const steps = (msg["stepResults"] as unknown[]) ?? [];
+  let text = success ? "✅ 복구 완료\n" : (rolled ? "↩️ 롤백됨\n" : "❌ 복구 실패\n");
+  for (const s of steps.slice(0, 5)) {
+    const m = s as Record<string, unknown>;
+    text += `  ${m["status"] === "success" ? "✓" : "✗"} ${m["stepName"]}\n`;
+  }
+  ui.addAssistantMessage("assistant", text.trim());
+}
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

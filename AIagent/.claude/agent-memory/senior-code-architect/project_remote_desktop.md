@@ -1,10 +1,28 @@
 ---
-name: remote-desktop Phase 1~5
-description: WebRTC 원격 데스크톱 제어 시스템 Phase 1~5 - 모노레포 구조, 시그널링 서버, 뷰어 앱, 호스트 Electron 앱, 뷰어 주도 화면 소스 선택 구현 현황
+name: remote-desktop Phase 1~7
+description: WebRTC 원격 데스크톱 제어 시스템 Phase 1~7 - 모노레포 구조, 시그널링 서버, 뷰어 앱, 호스트 Electron 앱, 뷰어 주도 화면 소스 선택, AI 어시스턴트 사이드 패널, Flutter 뷰어 앱 구현 현황
 type: project
 ---
 
-pnpm workspace 모노레포로 Phase 1~4 구현 완료 (2026-04-06).
+pnpm workspace 모노레포로 Phase 1~6 구현 완료 (2026-04-06).
+
+Phase 7 - Flutter 뷰어 앱 (packages/viewer-app-flutter, 2026-04-07):
+- flutter create --org com.remotecall --project-name viewer_app_flutter
+- 의존성: flutter_webrtc ^1.4.1, web_socket_channel ^3.0.3, supabase_flutter ^2.8.4, http ^1.2.2
+- PointerScrollEvent는 package:flutter/gestures.dart import 필요 (material.dart만으로는 부족)
+- 기본 생성된 test/widget_test.dart는 MyApp 참조 → ViewerApp으로 교체하거나 placeholder test로 교체 필수 (analyze 오류 원인)
+- 파일 구조:
+  - lib/main.dart — ViewerApp, onGenerateRoute (/, /waiting)
+  - lib/app_theme.dart — 색상 상수 + buildAppTheme()
+  - lib/signaling.dart — ViewerSignaling (register/sendOffer/sendIceCandidate + 콜백)
+  - lib/peer_connection.dart — ViewerPeerConnection (startOffer/setAnswer/addIceCandidate/sendMessage)
+  - lib/screens/dashboard_screen.dart — Supabase 통계 + 세션 이력
+  - lib/screens/waiting_screen.dart — 접속번호 표시 + 호스트 대기
+  - lib/screens/streaming_screen.dart — RTCVideoView + Listener 입력 캡처 + AI 어시스턴트 패널
+  - lib/services/supabase_service.dart — SupabaseService 싱글톤 (loadStats/loadRecentSessions/startSession/endSession)
+  - lib/services/assistant_service.dart — document_chunks ILIKE 검색 + HTTP LLM 프록시
+- 뷰어가 offer 생성, 호스트가 answer 반환 (기존 프로토콜과 동일)
+- DataChannel: negotiated:true, id:0, ordered:true
 
 위치: d:\vibecoding\AIagent\remote-desktop\
 
@@ -49,6 +67,18 @@ Phase 5 - 뷰어 주도 화면 소스 선택 (2026-04-06):
 - viewer index.html: status-right 내부에 <div id="monitor-buttons"> 추가
 - viewer style.css: .monitor-btn, .monitor-btn.active 스타일 추가
 - viewer tsconfig.json: "types": ["vite/client"] 추가 (import.meta.hot 타입 해소)
+
+Phase 6 - AI 어시스턴트 사이드 패널 (2026-04-06):
+- stream-screen을 stream-main(flex-row) + video-area + assistant-panel(width:380px)으로 재구성
+- 신규 파일: src/assistant-search.ts (Supabase document_chunks ILIKE 검색)
+- 신규 파일: src/assistant-widget.ts (window.open 팝업 분리, setInterval 폴링으로 닫힘 감지)
+- ui.ts: MessageType 타입 추가, 어시스턴트 DOM 참조 9개 추가
+  - addAssistantMessage(type, text), addLoadingMessage(), toggleAssistantPanel(), setAssistantPanelVisible(visible) 메서드 추가
+- main.ts: handleAssistantSearch() async 함수 — user 메시지 → 로딩 → searchDocuments → 결과 표시
+- index.html: assistant-panel 구조 (헤더+위젯분리버튼+접기버튼 / 호스트명령바 / 메시지영역 / 입력바)
+  - status-bar에 #assistant-open-btn 추가 (패널 접힌 상태에서 복원)
+- 호스트 명령 바 및 아이콘 버튼은 UI만 구현, 클릭 시 "추후 구현 예정" system 메시지 표시
+- CSS: .stream-main, .video-area, .assistant-panel, 메시지 버블, 로딩 점 애니메이션 추가
 
 Phase 3 - 뷰어 웹 앱 (packages/viewer-app):
 - Vite + TypeScript, 개발 서버 포트 3000

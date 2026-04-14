@@ -134,7 +134,8 @@ export function runDiagnosis(diag: SystemDiagnostics): DiagnosisResult[] {
   }
 
   // ── 7. 방화벽 비활성 ──────────────────────────────
-  if (diag.security.firewallEnabled === false && diag.security.defenderEnabled === false) {
+  const sec = diag.security ?? { firewallEnabled: false, defenderEnabled: false, uacEnabled: false, antivirusProducts: [] };
+  if (sec.firewallEnabled === false && sec.defenderEnabled === false) {
     // 보안 정보가 수집된 경우에만 (값이 false이고 수집 안 된 게 아닌지)
     // security 필드가 모두 false이면 수집 안 됐을 가능성 → 건너뜀
   }
@@ -165,7 +166,8 @@ export function runDiagnosis(diag: SystemDiagnostics): DiagnosisResult[] {
   }
 
   // ── 10. 모니터 구성 ───────────────────────────────
-  if (diag.userEnv.monitors.length === 0) {
+  const env = diag.userEnv ?? { monitors: [], defaultBrowser: "", printers: [] };
+  if (env.monitors.length === 0) {
     results.push({
       category: "환경",
       title: "모니터 감지 불가",

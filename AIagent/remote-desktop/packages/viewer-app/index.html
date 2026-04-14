@@ -15,6 +15,7 @@
             <h1 class="app-title">RemoteCall-mini</h1>
             <p class="app-subtitle">원격지원 대시보드</p>
           </div>
+          <button id="dashboard-settings-btn" class="btn btn-icon dashboard-settings-btn" title="환경설정">⚙</button>
         </header>
 
         <!-- 통계 카드 영역 -->
@@ -47,7 +48,7 @@
             </div>
           </div>
 
-          <!-- 오른쪽: 매크로 관리 -->
+          <!-- 오른쪽: 매크로 + 플레이북 관리 -->
           <div class="macro-section">
             <div class="macro-header">
               <h2 class="section-title">매크로 관리</h2>
@@ -56,17 +57,15 @@
             <div id="macro-list" class="macro-list">
               <p class="session-empty">로딩 중...</p>
             </div>
-          </div>
-        </div>
 
-        <!-- 플레이북 관리 -->
-        <div class="playbook-section">
-          <div class="macro-header">
-            <h2 class="section-title">플레이북 관리</h2>
-            <button id="playbook-add-btn" class="btn macro-add-btn">+ 추가</button>
-          </div>
-          <div id="playbook-list" class="macro-list">
-            <p class="session-empty">로딩 중...</p>
+            <!-- 플레이북 관리 (매크로 바로 아래) -->
+            <div class="macro-header" style="margin-top:16px;">
+              <h2 class="section-title">플레이북 관리</h2>
+              <button id="playbook-add-btn" class="btn macro-add-btn">+ 추가</button>
+            </div>
+            <div id="playbook-list" class="macro-list">
+              <p class="session-empty">로딩 중...</p>
+            </div>
           </div>
         </div>
 
@@ -159,6 +158,30 @@
       </div>
     </div>
 
+    <!-- 환경설정 모달 -->
+    <div id="settings-modal" class="modal-overlay hidden">
+      <div class="modal-content" style="max-width:420px;">
+        <div class="modal-header">
+          <h2 class="modal-title">환경설정</h2>
+          <button id="settings-modal-close" class="btn btn-icon modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="settings-group">
+            <div class="settings-item">
+              <div>
+                <div style="font-size:13px;font-weight:500;color:var(--text-primary);">녹화 자동 시작</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">상담 연결 시 화면 녹화를 자동으로 시작합니다.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="dashboard-auto-record" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 상담 종료 화면 -->
     <div id="end-screen" class="screen hidden">
       <div class="connect-card">
@@ -190,7 +213,24 @@
     <div id="stream-screen" class="screen hidden">
       <!-- 비디오 영역과 AI 패널을 가로로 나누는 컨테이너 -->
       <div class="stream-main">
-        <!-- 기존 비디오 영역 (video-container를 video-area로 감쌈) -->
+        <!-- 왼쪽: 채팅 위젯 (기본 표시, 접기 가능) -->
+        <div id="chat-widget" class="chat-widget">
+          <div class="chat-widget-header">
+            <span class="chat-widget-title">💬 채팅</span>
+            <span id="chat-widget-badge" class="chat-widget-badge hidden">0</span>
+            <button id="chat-widget-collapse-btn" class="btn btn-icon chat-widget-collapse-btn" title="채팅 접기">◂</button>
+          </div>
+          <div class="chat-widget-body">
+            <div id="chat-widget-messages" class="chat-messages"></div>
+            <div id="chat-widget-typing" class="chat-typing-indicator"></div>
+          </div>
+          <div class="chat-widget-input-bar">
+            <input type="text" id="chat-widget-input" class="chat-text-input" placeholder="메시지 입력..." autocomplete="off" />
+            <button id="chat-widget-send-btn" class="chat-send-btn" title="전송">&#8594;</button>
+          </div>
+        </div>
+
+        <!-- 가운데: 비디오 영역 (video-container를 video-area로 감쌈) -->
         <div class="video-area">
           <div class="video-container">
             <video
@@ -231,6 +271,9 @@
               <button id="assistant-collapse-btn" class="btn btn-icon assistant-action-btn" title="패널 접기">›</button>
             </div>
           </div>
+
+          <!-- 자동진단 이슈 알림 카드 영역 (PLAN.md 승인형 플로우) -->
+          <div id="issue-alerts" class="issue-alerts hidden"></div>
 
           <!-- 호스트 시스템 정보 바 (접이식 진단 패널) -->
           <div class="host-info-bar" id="host-info-bar">
@@ -361,6 +404,11 @@
               <span class="assistant-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="#4f8ef7" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="#4f8ef7" stroke-width="2"/></svg></span>
               <span class="assistant-nav-label">설정</span>
             </button>
+            <button class="assistant-nav-item" data-tab="chat" style="position:relative;">
+              <span class="assistant-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="#4f8ef7" stroke-width="2" stroke-linejoin="round"/></svg></span>
+              <span class="assistant-nav-label">채팅</span>
+              <span id="chat-unread-badge" class="chat-unread-badge hidden">0</span>
+            </button>
           </nav>
         </div>
       </div>
@@ -376,6 +424,7 @@
           <span id="stats-display" class="stats-text"></span>
           <!-- 패널 접힌 상태에서 다시 열기 버튼 -->
           <button id="assistant-open-btn" class="btn btn-icon hidden" title="AI 패널 열기" style="font-size:13px; color: var(--accent); display:inline-flex; align-items:center; gap:3px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2L13.09 8.26L18 6L14.74 10.91L21 12L14.74 13.09L18 18L13.09 15.74L12 22L10.91 15.74L6 18L9.26 13.09L3 12L9.26 10.91L6 6L10.91 8.26L12 2Z" fill="#8b5cf6"/></svg> AI</button>
+          <button id="recording-btn" class="btn btn-icon recording-btn" title="녹화 시작">⏺</button>
           <button id="fullscreen-btn" class="btn btn-icon" title="전체화면">⛶</button>
           <button id="disconnect-btn" class="btn btn-danger-sm">연결 끊기</button>
         </div>
